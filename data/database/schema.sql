@@ -1,14 +1,4 @@
-/* =========================/* Route-planning reliability lookups. */
-CREATE INDEX idx_reliability_lookup
-    ON connection_reliability (
-        from_route_id,
-        to_route_id,
-        transfer_stop_id,
-        weekday,
-        hour_of_day
-    );/* Historical delay-model queries. */
-CREATE INDEX idx_delay_trip_date
-    ON delay_observations (trip_id, service_date);===================================
+   /* ===================================
    VANCOUVER TRANSIT PLANNER
    PostgreSQL database schema
    ============================================================ */
