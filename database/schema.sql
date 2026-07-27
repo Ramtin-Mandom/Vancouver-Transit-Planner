@@ -522,7 +522,8 @@ CREATE TABLE delay_observations (
         )
 );
 
-/* Historical route/stop profiles. "On time" means <= 300 seconds late. */
+/* Historical route/stop profiles.
+   Early: delay < -60; on time: -60..300; late: delay > 300 seconds. */
 CREATE TABLE route_reliability (
     route_id                 TEXT NOT NULL,
     stop_id                  TEXT NOT NULL,
@@ -530,10 +531,13 @@ CREATE TABLE route_reliability (
     hour_of_day              SMALLINT NOT NULL,
     sample_count             INTEGER NOT NULL,
     mean_delay_seconds       DOUBLE PRECISION NOT NULL,
+    mean_absolute_delay_seconds DOUBLE PRECISION NOT NULL,
     delay_stddev_seconds     DOUBLE PRECISION,
     p50_delay_seconds        DOUBLE PRECISION NOT NULL,
     p90_delay_seconds        DOUBLE PRECISION NOT NULL,
+    early_probability        DOUBLE PRECISION NOT NULL,
     on_time_probability      DOUBLE PRECISION NOT NULL,
+    late_probability         DOUBLE PRECISION NOT NULL,
     updated_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (route_id, stop_id, weekday, hour_of_day),
@@ -545,8 +549,23 @@ CREATE TABLE route_reliability (
     CONSTRAINT valid_reliability_weekday CHECK (weekday BETWEEN 0 AND 6),
     CONSTRAINT valid_reliability_hour CHECK (hour_of_day BETWEEN 0 AND 23),
     CONSTRAINT valid_reliability_samples CHECK (sample_count >= 0),
+    CONSTRAINT valid_mean_absolute_delay
+        CHECK (mean_absolute_delay_seconds >= 0),
+    CONSTRAINT valid_route_early_probability
+        CHECK (early_probability BETWEEN 0.0 AND 1.0),
     CONSTRAINT valid_route_on_time_probability
-        CHECK (on_time_probability BETWEEN 0.0 AND 1.0)
+        CHECK (on_time_probability BETWEEN 0.0 AND 1.0),
+    CONSTRAINT valid_route_late_probability
+        CHECK (late_probability BETWEEN 0.0 AND 1.0),
+    CONSTRAINT complete_delay_classification
+        CHECK (
+            ABS(
+                early_probability
+                + on_time_probability
+                + late_probability
+                - 1.0
+            ) < 0.000001
+        )
 );
 
 

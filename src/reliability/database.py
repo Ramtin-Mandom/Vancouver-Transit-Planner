@@ -13,6 +13,7 @@ from psycopg.rows import dict_row
 from src.data_ingestion.config import DatabaseConfig
 
 from .models import DelayObservation, ReliabilityProfile, ScheduledStop
+from .classification import EARLY_THRESHOLD_SECONDS, LATE_THRESHOLD_SECONDS
 
 
 class ReliabilityDatabase:
@@ -169,6 +170,8 @@ class ReliabilityDatabase:
                     COUNT(*)::integer AS sample_count,
                     AVG(latest.delay_seconds)::double precision
                         AS mean_delay_seconds,
+                    AVG(ABS(latest.delay_seconds))::double precision
+                        AS mean_absolute_delay_seconds,
                     STDDEV_SAMP(latest.delay_seconds)::double precision
                         AS delay_stddev_seconds,
                     PERCENTILE_CONT(0.5) WITHIN GROUP (
@@ -177,35 +180,55 @@ class ReliabilityDatabase:
                     PERCENTILE_CONT(0.9) WITHIN GROUP (
                         ORDER BY latest.delay_seconds
                     )::double precision AS p90_delay_seconds,
-                    AVG(
-                        CASE WHEN latest.delay_seconds <= 300
-                             THEN 1.0 ELSE 0.0 END
-                    )::double precision AS on_time_probability
+                    AVG(CASE
+                        WHEN latest.delay_seconds < {EARLY_THRESHOLD_SECONDS}
+                        THEN 1.0 ELSE 0.0
+                    END)::double precision AS early_probability,
+                    AVG(CASE
+                        WHEN latest.delay_seconds
+                             BETWEEN {EARLY_THRESHOLD_SECONDS}
+                                 AND {LATE_THRESHOLD_SECONDS}
+                        THEN 1.0 ELSE 0.0
+                    END)::double precision AS on_time_probability,
+                    AVG(CASE
+                        WHEN latest.delay_seconds > {LATE_THRESHOLD_SECONDS}
+                        THEN 1.0 ELSE 0.0
+                    END)::double precision AS late_probability
                 FROM latest
                 JOIN transit.trips AS t ON t.trip_id = latest.trip_id
                 GROUP BY t.route_id, latest.stop_id, weekday, hour_of_day
             )
             INSERT INTO transit.route_reliability (
                 route_id, stop_id, weekday, hour_of_day, sample_count,
-                mean_delay_seconds, delay_stddev_seconds, p50_delay_seconds,
-                p90_delay_seconds, on_time_probability, updated_at
+                mean_delay_seconds, mean_absolute_delay_seconds,
+                delay_stddev_seconds, p50_delay_seconds, p90_delay_seconds,
+                early_probability, on_time_probability, late_probability,
+                updated_at
             )
             SELECT route_id, stop_id, weekday, hour_of_day, sample_count,
-                   mean_delay_seconds, delay_stddev_seconds,
-                   p50_delay_seconds, p90_delay_seconds,
-                   on_time_probability, CURRENT_TIMESTAMP
+                   mean_delay_seconds, mean_absolute_delay_seconds,
+                   delay_stddev_seconds, p50_delay_seconds,
+                   p90_delay_seconds, early_probability,
+                   on_time_probability, late_probability, CURRENT_TIMESTAMP
             FROM aggregated
             ON CONFLICT (route_id, stop_id, weekday, hour_of_day)
             DO UPDATE SET
                 sample_count = EXCLUDED.sample_count,
                 mean_delay_seconds = EXCLUDED.mean_delay_seconds,
+                mean_absolute_delay_seconds =
+                    EXCLUDED.mean_absolute_delay_seconds,
                 delay_stddev_seconds = EXCLUDED.delay_stddev_seconds,
                 p50_delay_seconds = EXCLUDED.p50_delay_seconds,
                 p90_delay_seconds = EXCLUDED.p90_delay_seconds,
+                early_probability = EXCLUDED.early_probability,
                 on_time_probability = EXCLUDED.on_time_probability,
+                late_probability = EXCLUDED.late_probability,
                 updated_at = CURRENT_TIMESTAMP
             RETURNING sample_count
-        """
+        """.format(
+            EARLY_THRESHOLD_SECONDS=EARLY_THRESHOLD_SECONDS,
+            LATE_THRESHOLD_SECONDS=LATE_THRESHOLD_SECONDS,
+        )
         count_latest = """
             SELECT COUNT(*) AS count
             FROM (
@@ -249,14 +272,22 @@ class ReliabilityDatabase:
                 %s::integer AS weekday, %s::integer AS hour_of_day,
                 COUNT(*)::integer AS sample_count,
                 AVG(delay_seconds)::double precision AS mean_delay_seconds,
+                AVG(ABS(delay_seconds))::double precision
+                    AS mean_absolute_delay_seconds,
                 STDDEV_SAMP(delay_seconds)::double precision
                     AS delay_stddev_seconds,
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY delay_seconds)
                     ::double precision AS p50_delay_seconds,
                 PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY delay_seconds)
                     ::double precision AS p90_delay_seconds,
-                AVG(CASE WHEN delay_seconds <= 300 THEN 1.0 ELSE 0.0 END)
-                    ::double precision AS on_time_probability
+                AVG(CASE WHEN delay_seconds < {early} THEN 1.0 ELSE 0.0 END)
+                    ::double precision AS early_probability,
+                AVG(CASE
+                    WHEN delay_seconds BETWEEN {early} AND {late}
+                    THEN 1.0 ELSE 0.0 END
+                )::double precision AS on_time_probability,
+                AVG(CASE WHEN delay_seconds > {late} THEN 1.0 ELSE 0.0 END)
+                    ::double precision AS late_probability
             FROM latest
             WHERE (%s::text IS NULL OR route_id = %s)
               AND (%s::text IS NULL OR stop_id = %s)
@@ -270,7 +301,10 @@ class ReliabilityDatabase:
                       FLOOR(EXTRACT(EPOCH FROM scheduled_arrival) / 3600), 24
                   )::integer = %s
               )
-        """
+        """.format(
+            early=EARLY_THRESHOLD_SECONDS,
+            late=LATE_THRESHOLD_SECONDS,
+        )
         params = (
             route_id, stop_id, weekday, hour,
             route_id, route_id, stop_id, stop_id,

@@ -60,10 +60,13 @@ class ReliabilityProfile:
     hour_of_day: int | None
     sample_count: int
     mean_delay_seconds: float
+    mean_absolute_delay_seconds: float
     delay_stddev_seconds: float | None
     p50_delay_seconds: float
     p90_delay_seconds: float
+    early_probability: float
     on_time_probability: float
+    late_probability: float
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,7 @@ class AggregationSummary:
 @dataclass(frozen=True)
 class SimulationResult:
     completion_probability: float
+    schedule_adherence: float
     on_time_arrival_probability: float
     expected_arrival_delay_seconds: float
     p90_arrival_delay_seconds: float
@@ -96,4 +100,6 @@ class RankedItinerary:
     itinerary: Itinerary
     simulation: SimulationResult
     reliability_score: float
+    schedule_adherence: float
+    speed_ratio: float
     itinerary_id: str

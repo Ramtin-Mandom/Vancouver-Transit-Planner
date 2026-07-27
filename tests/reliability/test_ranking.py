@@ -11,8 +11,16 @@ def journey(trip, minutes):
     return Itinerary(a, b, date(2026, 7, 27), timedelta(hours=8), leg.arrival_time, (leg,))
 
 
-def simulation(completion):
-    return SimulationResult(completion, completion, 0, 0, False, ("exact",))
+def simulation(completion, adherence=None):
+    return SimulationResult(
+        completion_probability=completion,
+        schedule_adherence=completion if adherence is None else adherence,
+        on_time_arrival_probability=completion,
+        expected_arrival_delay_seconds=0,
+        p90_arrival_delay_seconds=0,
+        insufficient_data=False,
+        fallback_levels=("exact",),
+    )
 
 
 def test_slower_reliable_route_can_rank_above_fast_unreliable_route():
@@ -27,3 +35,10 @@ def test_stable_tie_breaking_uses_identifier():
     assert [item.itinerary_id for item in ranked] == sorted(
         item.itinerary_id for item in ranked
     )
+
+
+def test_direct_inconsistent_route_is_not_automatically_perfect():
+    direct = journey("DIRECT", 10)
+    ranked = rank_itineraries([direct], [simulation(1.0, adherence=0.2)])
+    assert ranked[0].reliability_score == 80.0
+    assert ranked[0].reliability_score < 100

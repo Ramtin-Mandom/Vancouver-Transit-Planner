@@ -70,6 +70,14 @@ def print_ranked_itineraries(ranked) -> None:
         print_itinerary(item.itinerary)
         result = item.simulation
         print(f"Completion probability: {result.completion_probability:.1%}")
+        print(f"Schedule adherence: {item.schedule_adherence:.1%}")
+        print(f"Speed ratio: {item.speed_ratio:.3f}")
+        print(
+            "Score components: "
+            f"0.55×{result.completion_probability:.3f} + "
+            f"0.25×{item.schedule_adherence:.3f} + "
+            f"0.20×{item.speed_ratio:.3f}"
+        )
         print(
             "On-time arrival probability (<= 10 min): "
             f"{result.on_time_arrival_probability:.1%}"

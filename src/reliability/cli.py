@@ -61,10 +61,19 @@ def main() -> int:
                 return 1
             profile = selection.profile
             print(f"Samples: {profile.sample_count}")
-            print(f"Mean delay: {profile.mean_delay_seconds:.1f}s")
+            print(f"Signed average delay: {profile.mean_delay_seconds:.1f}s")
+            print(
+                "Mean absolute delay: "
+                f"{profile.mean_absolute_delay_seconds:.1f}s"
+            )
             print(f"P50 delay: {profile.p50_delay_seconds:.1f}s")
             print(f"P90 delay: {profile.p90_delay_seconds:.1f}s")
-            print(f"On-time probability (<= 5 min): {profile.on_time_probability:.1%}")
+            print(f"Early probability (< -60s): {profile.early_probability:.1%}")
+            print(
+                "On-time probability (-60s to 300s): "
+                f"{profile.on_time_probability:.1%}"
+            )
+            print(f"Late probability (> 300s): {profile.late_probability:.1%}")
     except (
         ConfigurationError,
         RealtimeDownloadError,

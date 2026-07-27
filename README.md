@@ -264,12 +264,16 @@ reliability migration:
 
 ```powershell
 psql -d vancouver_transit -f database/migrations/001_reliability_data.sql
+psql -d vancouver_transit -f database/migrations/002_delay_classification.sql
 ```
 
 The migration preserves imported GTFS data. It adds `stop_sequence` to existing
 delay observations, corrects snapshot uniqueness, and creates
 `route_reliability`. Review the documented stop-sequence backfill before
 running it, especially if delay observations already exist.
+Migration `002` preserves raw observations and adds the absolute-delay and
+three-way probability columns. Run aggregation after applying it to rebuild
+all derived profiles with the new classification.
 
 ### Collect and aggregate
 
@@ -293,8 +297,64 @@ python -m src.reliability.cli aggregate --minimum-samples 20
 
 Aggregation uses only the latest observation for each
 trip/stop/sequence/service-date combination, preventing frequently observed
-trips from receiving extra statistical weight. A vehicle is considered on time
-when its delay is no more than five minutes (`300` seconds).
+trips from receiving extra statistical weight. Delay outcomes use a complete
+three-way classification:
+
+- earlier than 60 seconds early (`delay < -60`): early and penalized;
+- from 60 seconds early through five minutes late (`-60 <= delay <= 300`):
+  on time;
+- more than five minutes late (`delay > 300`): late and penalized.
+
+Signed average delay is retained because its direction is necessary when
+simulating transfer timing. It is not sufficient as a reliability measure on
+its own: large early and late values can cancel to an average near zero even
+when service is inconsistent. Profiles therefore also report mean absolute
+delay and separate early, on-time, and late probabilities. Early arrivals are
+penalized because leaving materially ahead of schedule can cause passengers to
+miss a vehicle just as a late connection can.
+
+#### Windows Task Scheduler setup used for data collection
+
+The current data-collection setup uses Windows Task Scheduler:
+
+- collect one GTFS-Realtime snapshot every five minutes;
+- rebuild reliability profiles once per day.
+
+For both tasks, configure **Start in** as the repository's absolute directory,
+for example:
+
+```text
+C:\Users\YOUR_NAME\path\to\Vancouver-Transit-Planner
+```
+
+Use the virtual environment's absolute Python executable as **Program/script**:
+
+```text
+C:\Users\YOUR_NAME\path\to\Vancouver-Transit-Planner\.venv\Scripts\python.exe
+```
+
+For the five-minute collection task, use:
+
+```text
+-m src.reliability.cli collect
+```
+
+Create a daily aggregation task with:
+
+```text
+-m src.reliability.cli aggregate --minimum-samples 20
+```
+
+Set the collection task to avoid starting a second instance when the previous
+run is still active. The API key and database credentials remain in the local
+`.env`; do not put secrets directly in Task Scheduler arguments.
+
+Collecting every five minutes provides snapshots throughout each trip and helps
+retain the latest useful prediction. It does not artificially multiply the
+statistical weight of that trip: daily aggregation selects only the latest
+observation for each trip, stop, stop sequence, and service date. Rebuilding
+profiles daily is therefore sufficient even though collection runs much more
+frequently.
 
 Inspect a route-wide or contextual profile:
 
@@ -351,12 +411,22 @@ after the final scheduled arrival.
 Alternatives are ranked with:
 
 ```text
-100 × (0.70 × completion probability
-       + 0.30 × fastest scheduled duration / candidate scheduled duration)
+completion_probability = probability of completing all transfers
+schedule_adherence = average on-time probability across the candidate's legs
+speed_ratio = fastest scheduled duration / candidate scheduled duration
+
+score = 100 × (
+    0.55 × completion_probability
+    + 0.25 × schedule_adherence
+    + 0.20 × speed_ratio
+)
 ```
 
-Scores are clamped to `0–100`; ties prefer completion probability, scheduled
-arrival, fewer transfers, and finally a stable itinerary identifier.
+All three components are clamped to `0–1`, and the score is clamped to
+`0–100`. Including schedule adherence means a direct route is not automatically
+treated as perfectly reliable merely because it has no transfer to miss. Ties
+prefer completion probability, scheduled arrival, fewer transfers, and finally
+a stable itinerary identifier.
 
 ### Reliability tests
 

@@ -26,7 +26,10 @@ class Resolver:
     def resolve(self, *args):
         if self.insufficient:
             return ProfileSelection(None, "insufficient-data", True)
-        value = ReliabilityProfile("R", "S", 0, 8, 30, self.delay, 0, self.delay, self.delay, 1)
+        value = ReliabilityProfile(
+            "R", "S", 0, 8, 30, self.delay, abs(self.delay), 0,
+            self.delay, self.delay, 0, 1, 0,
+        )
         return ProfileSelection(value, "exact", False)
 
 
@@ -40,3 +43,10 @@ def test_fixed_seed_is_deterministic_and_insufficient_is_flagged():
     second = simulate_itinerary(itinerary(), Resolver(0, True), simulations=50, seed=7)
     assert first == second
     assert first.insufficient_data
+
+
+def test_signed_delays_remain_signed_in_simulation():
+    result = simulate_itinerary(
+        itinerary(), Resolver(-120), simulations=10, seed=1
+    )
+    assert result.expected_arrival_delay_seconds == -120

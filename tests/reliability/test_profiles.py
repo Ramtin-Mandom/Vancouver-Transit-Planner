@@ -5,7 +5,21 @@ from src.reliability.profiles import FALLBACKS, ProfileResolver
 
 
 def profile(samples=20):
-    return ReliabilityProfile("R", "S", 0, 8, samples, 60, 10, 60, 90, 1.0)
+    return ReliabilityProfile(
+        route_id="R",
+        stop_id="S",
+        weekday=0,
+        hour_of_day=8,
+        sample_count=samples,
+        mean_delay_seconds=60,
+        mean_absolute_delay_seconds=90,
+        delay_stddev_seconds=10,
+        p50_delay_seconds=60,
+        p90_delay_seconds=90,
+        early_probability=0.1,
+        on_time_probability=0.8,
+        late_probability=0.1,
+    )
 
 
 @pytest.mark.parametrize("selected_index", range(len(FALLBACKS)))

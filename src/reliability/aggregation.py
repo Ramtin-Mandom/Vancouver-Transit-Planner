@@ -6,6 +6,7 @@ from time import perf_counter
 from math import sqrt
 
 from .models import AggregationSummary
+from .classification import classify_delay
 
 
 def summarize_delays(delays: list[int]) -> dict[str, float]:
@@ -30,10 +31,21 @@ def summarize_delays(delays: list[int]) -> dict[str, float]:
     return {
         "sample_count": float(len(delays)),
         "mean_delay_seconds": average,
+        "mean_absolute_delay_seconds": (
+            sum(abs(item) for item in delays) / len(delays)
+        ),
         "delay_stddev_seconds": stddev,
         "p50_delay_seconds": percentile(0.5),
         "p90_delay_seconds": percentile(0.9),
-        "on_time_probability": sum(item <= 300 for item in delays) / len(delays),
+        "early_probability": (
+            sum(classify_delay(item) == "early" for item in delays) / len(delays)
+        ),
+        "on_time_probability": (
+            sum(classify_delay(item) == "on-time" for item in delays) / len(delays)
+        ),
+        "late_probability": (
+            sum(classify_delay(item) == "late" for item in delays) / len(delays)
+        ),
     }
 
 

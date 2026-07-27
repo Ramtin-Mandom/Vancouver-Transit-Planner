@@ -6,6 +6,10 @@ import random
 from statistics import mean
 
 from .models import SimulationResult
+from .classification import (
+    EARLY_THRESHOLD_SECONDS,
+    FINAL_ARRIVAL_LATE_THRESHOLD_SECONDS,
+)
 
 MIN_DELAY_SECONDS = -900
 MAX_DELAY_SECONDS = 7200
@@ -42,6 +46,14 @@ def simulate_itinerary(
                 hour,
             )
         )
+    schedule_adherence = (
+        mean(
+            item.profile.on_time_probability if item.profile is not None else 0.0
+            for item in selections
+        )
+        if selections
+        else 0.0
+    )
 
     completions = 0
     final_delays: list[float] = []
@@ -71,12 +83,19 @@ def simulate_itinerary(
 
     completion = completions / simulations
     on_time = (
-        sum(delay <= 600 for delay in final_delays) / simulations
+        sum(
+            EARLY_THRESHOLD_SECONDS
+            <= delay
+            <= FINAL_ARRIVAL_LATE_THRESHOLD_SECONDS
+            for delay in final_delays
+        )
+        / simulations
         if final_delays
         else 0.0
     )
     return SimulationResult(
         completion_probability=completion,
+        schedule_adherence=schedule_adherence,
         on_time_arrival_probability=on_time,
         expected_arrival_delay_seconds=mean(final_delays) if final_delays else 0.0,
         p90_arrival_delay_seconds=_percentile(final_delays, 0.9),
