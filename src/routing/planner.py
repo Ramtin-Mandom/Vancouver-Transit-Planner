@@ -115,6 +115,64 @@ class TransitPlanner:
             previous,
         )
 
+    def plan_candidates(
+        self,
+        origin_stop_id: str,
+        destination_stop_id: str,
+        service_date: date,
+        departure_time: timedelta,
+        *,
+        limit: int = 5,
+        max_extra_minutes: int = 30,
+    ) -> list[Itinerary]:
+        """Return bounded, distinct scheduled alternatives.
+
+        Successive earliest-arrival searches advance just beyond the first
+        boarding of the previous result. This retains the proven scheduled
+        router and produces non-cyclic alternatives without changing plan().
+        """
+        if limit < 1 or max_extra_minutes < 0:
+            raise ValueError("candidate limit must be positive and extra time nonnegative")
+        candidates: list[Itinerary] = []
+        identifiers: set[tuple[tuple[str, str, str], ...]] = set()
+        search_time = departure_time
+        fastest_arrival: timedelta | None = None
+        attempts = 0
+        while len(candidates) < limit and attempts < limit * 4:
+            attempts += 1
+            itinerary = self.plan(
+                origin_stop_id,
+                destination_stop_id,
+                service_date,
+                search_time,
+            )
+            if itinerary is None:
+                break
+            if fastest_arrival is None:
+                fastest_arrival = itinerary.arrival_time
+            if itinerary.arrival_time > fastest_arrival + timedelta(
+                minutes=max_extra_minutes
+            ):
+                break
+            identifier = tuple(
+                (
+                    leg.trip_id,
+                    leg.origin.stop_id,
+                    leg.destination.stop_id,
+                )
+                for leg in itinerary.legs
+            )
+            if identifier and identifier not in identifiers:
+                identifiers.add(identifier)
+                candidates.append(itinerary)
+            if not itinerary.legs:
+                break
+            next_search = itinerary.legs[0].departure_time + timedelta(seconds=1)
+            if next_search <= search_time:
+                break
+            search_time = next_search
+        return candidates
+
     def _relax_departures(
         self,
         stop_id: str,
