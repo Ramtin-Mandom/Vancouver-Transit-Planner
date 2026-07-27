@@ -229,3 +229,15 @@ def test_bulk_active_service_lookup_is_used_when_available():
 
     assert result is not None
     assert result.arrival_time == at(8, 20)
+
+
+def test_plan_candidates_preserves_plan_and_deduplicates_trips():
+    trips = {
+        "T1": [connection("T1", "weekday", "10", "A", "B", at(8), at(8, 10))],
+        "T2": [connection("T2", "weekday", "10", "A", "B", at(8, 15), at(8, 25))],
+    }
+    planner = TransitPlanner(FakeDatabase(stops("A", "B"), trips))
+    original = planner.plan("A", "B", MONDAY, at(7, 55))
+    candidates = planner.plan_candidates("A", "B", MONDAY, at(7, 55), limit=5)
+    assert candidates[0] == original
+    assert [item.legs[0].trip_id for item in candidates] == ["T1", "T2"]

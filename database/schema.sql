@@ -495,6 +495,7 @@ CREATE TABLE delay_observations (
 
     trip_id              TEXT NOT NULL,
     stop_id              TEXT NOT NULL,
+    stop_sequence        INTEGER NOT NULL,
     service_date         DATE NOT NULL,
     scheduled_arrival    INTERVAL,
     observed_at          TIMESTAMPTZ NOT NULL,
@@ -512,8 +513,40 @@ CREATE TABLE delay_observations (
         REFERENCES stops(stop_id)
         ON DELETE CASCADE,
 
+    CONSTRAINT valid_delay_stop_sequence
+        CHECK (stop_sequence >= 0),
+
     CONSTRAINT unique_delay_observation
-        UNIQUE (trip_id, stop_id, service_date, observed_at)
+        UNIQUE (
+            trip_id, stop_id, stop_sequence, service_date, observed_at
+        )
+);
+
+/* Historical route/stop profiles. "On time" means <= 300 seconds late. */
+CREATE TABLE route_reliability (
+    route_id                 TEXT NOT NULL,
+    stop_id                  TEXT NOT NULL,
+    weekday                  SMALLINT NOT NULL,
+    hour_of_day              SMALLINT NOT NULL,
+    sample_count             INTEGER NOT NULL,
+    mean_delay_seconds       DOUBLE PRECISION NOT NULL,
+    delay_stddev_seconds     DOUBLE PRECISION,
+    p50_delay_seconds        DOUBLE PRECISION NOT NULL,
+    p90_delay_seconds        DOUBLE PRECISION NOT NULL,
+    on_time_probability      DOUBLE PRECISION NOT NULL,
+    updated_at               TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (route_id, stop_id, weekday, hour_of_day),
+
+    CONSTRAINT route_reliability_route_fk FOREIGN KEY (route_id)
+        REFERENCES routes(route_id) ON DELETE CASCADE,
+    CONSTRAINT route_reliability_stop_fk FOREIGN KEY (stop_id)
+        REFERENCES stops(stop_id) ON DELETE CASCADE,
+    CONSTRAINT valid_reliability_weekday CHECK (weekday BETWEEN 0 AND 6),
+    CONSTRAINT valid_reliability_hour CHECK (hour_of_day BETWEEN 0 AND 23),
+    CONSTRAINT valid_reliability_samples CHECK (sample_count >= 0),
+    CONSTRAINT valid_route_on_time_probability
+        CHECK (on_time_probability BETWEEN 0.0 AND 1.0)
 );
 
 
@@ -634,6 +667,17 @@ CREATE INDEX idx_delay_trip_date
 
 CREATE INDEX idx_delay_stop_date
     ON delay_observations (stop_id, service_date);
+
+CREATE INDEX idx_delay_latest
+    ON delay_observations (
+        trip_id, stop_id, stop_sequence, service_date, observed_at DESC
+    );
+
+CREATE INDEX idx_delay_aggregation
+    ON delay_observations (service_date, scheduled_arrival);
+
+CREATE INDEX idx_route_reliability_lookup
+    ON route_reliability (route_id, stop_id, weekday, hour_of_day);
 
 /* Route-planning reliability lookups. */
 CREATE INDEX idx_reliability_lookup

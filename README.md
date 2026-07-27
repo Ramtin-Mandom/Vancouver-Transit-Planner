@@ -1,8 +1,8 @@
 # Vancouver Transit Planner
 
-A scheduled transit planner that imports TransLink GTFS data into PostgreSQL
-and uses an earliest-arrival routing algorithm to find journeys. Reliability
-scoring and delay-aware route ranking are planned but are not yet implemented.
+A transit planner that imports TransLink GTFS data into PostgreSQL, finds
+scheduled journeys, collects GTFS-Realtime delay observations, and can rank
+route alternatives using historical delay and transfer reliability.
 
 ## PostgreSQL data ingestion
 
@@ -232,3 +232,149 @@ The relevant database lookups already use
 `idx_stop_times_stop_departure` and the `stop_times` primary key. Profiling with
 `EXPLAIN ANALYZE` showed no additional index was warranted, so the integration
 framework does not create or modify database indexes.
+
+## Delay reliability
+
+Reliability in this milestone means observed transit delay and the probability
+of completing scheduled transfers. It does not use weather data.
+
+### Configure and migrate
+
+Obtain a TransLink Open API key and add it to the local `.env` file:
+
+```dotenv
+TRANSLINK_API_KEY=your_key_here
+```
+
+The default Trip Updates endpoint is configured in
+`src/reliability/config.py`. It can be overridden without changing code:
+
+```dotenv
+TRANSLINK_GTFS_RT_URL=https://gtfsapi.translink.ca/v3/gtfsrealtime?apikey={api_key}
+```
+
+Install the updated dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+For an existing populated database, review and apply the non-destructive
+reliability migration:
+
+```powershell
+psql -d vancouver_transit -f database/migrations/001_reliability_data.sql
+```
+
+The migration preserves imported GTFS data. It adds `stop_sequence` to existing
+delay observations, corrects snapshot uniqueness, and creates
+`route_reliability`. Review the documented stop-sequence backfill before
+running it, especially if delay observations already exist.
+
+### Collect and aggregate
+
+Collect one realtime Trip Updates snapshot:
+
+```powershell
+python -m src.reliability.cli collect
+```
+
+One snapshot is useful for verifying the pipeline, but it is not enough for
+trustworthy reliability estimates. Run collection repeatedly over days or
+weeks using an external scheduler. Exact duplicate snapshots are ignored.
+Malformed entities and unknown trip/stop updates are counted without
+discarding valid observations from the same feed.
+
+Build route/stop reliability profiles:
+
+```powershell
+python -m src.reliability.cli aggregate --minimum-samples 20
+```
+
+Aggregation uses only the latest observation for each
+trip/stop/sequence/service-date combination, preventing frequently observed
+trips from receiving extra statistical weight. A vehicle is considered on time
+when its delay is no more than five minutes (`300` seconds).
+
+Inspect a route-wide or contextual profile:
+
+```powershell
+python -m src.reliability.cli report --route-id ROUTE_ID
+
+python -m src.reliability.cli report `
+  --route-id ROUTE_ID `
+  --stop-id STOP_ID `
+  --weekday 0 `
+  --hour 8
+```
+
+Weekdays use Python numbering: Monday is `0` and Sunday is `6`.
+
+Profile lookup requires the configured minimum sample count and falls back in
+this order:
+
+1. route + stop + weekday + hour;
+2. route + stop + hour;
+3. route + weekday + hour;
+4. route + hour;
+5. entire route;
+6. system-wide data;
+7. insufficient data.
+
+### Rank reliable alternatives
+
+The existing scheduled-routing command and output are unchanged unless
+`--reliable` is supplied:
+
+```powershell
+python -m src.routing.cli `
+  --origin STOP_ID `
+  --destination STOP_ID `
+  --date 2026-07-27 `
+  --departure 08:00:00 `
+  --reliable `
+  --alternatives 5 `
+  --simulations 1000 `
+  --seed 42 `
+  --max-extra-minutes 30 `
+  --minimum-samples 20
+```
+
+Simulation uses a deterministic seed and a normal approximation based on each
+selected profile's mean and standard deviation. Sampled delays are clamped
+between 15 minutes early and two hours late. When no profile has enough data,
+the result is explicitly marked insufficient and uses a conservative
+10-minute mean and 10-minute standard-deviation fallback.
+The reported on-time-arrival probability means arrival no more than ten minutes
+after the final scheduled arrival.
+
+Alternatives are ranked with:
+
+```text
+100 × (0.70 × completion probability
+       + 0.30 × fastest scheduled duration / candidate scheduled duration)
+```
+
+Scores are clamped to `0–100`; ties prefer completion probability, scheduled
+arrival, fewer transfers, and finally a stable itinerary identifier.
+
+### Reliability tests
+
+Normal reliability tests mock HTTP and PostgreSQL and require neither an API
+key nor internet access:
+
+```powershell
+python -m pytest -m "not integration" -v
+```
+
+Configured PostgreSQL integration tests remain opt-in:
+
+```powershell
+python -m pytest -m integration -s
+```
+
+Any future live-feed test must additionally require:
+
+```powershell
+$env:RUN_LIVE_GTFS_RT_TESTS = "1"
+```

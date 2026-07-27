@@ -40,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--destination", required=True, help="destination stop_id")
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--departure", required=True, type=parse_gtfs_time)
+    parser.add_argument("--reliable", action="store_true")
+    parser.add_argument("--alternatives", type=int, default=5)
+    parser.add_argument("--simulations", type=int, default=1000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-extra-minutes", type=int, default=30)
+    parser.add_argument("--minimum-samples", type=int, default=20)
     return parser
 
 
@@ -58,6 +64,22 @@ def print_itinerary(itinerary: Itinerary) -> None:
     )
 
 
+def print_ranked_itineraries(ranked) -> None:
+    for rank, item in enumerate(ranked, start=1):
+        print(f"\nAlternative {rank} — reliability score {item.reliability_score:.1f}")
+        print_itinerary(item.itinerary)
+        result = item.simulation
+        print(f"Completion probability: {result.completion_probability:.1%}")
+        print(
+            "On-time arrival probability (<= 10 min): "
+            f"{result.on_time_arrival_probability:.1%}"
+        )
+        print(f"Expected arrival delay: {result.expected_arrival_delay_seconds:.0f}s")
+        print(f"P90 arrival delay: {result.p90_arrival_delay_seconds:.0f}s")
+        print("Profile fallback levels: " + ", ".join(result.fallback_levels))
+        print(f"Insufficient data: {'yes' if result.insufficient_data else 'no'}")
+
+
 def main() -> int:
     args = build_parser().parse_args()
     try:
@@ -65,7 +87,41 @@ def main() -> int:
         # imports. Unit tests for these pure helpers do not need libpq.
         from .database import TransitDatabase
 
-        itinerary = TransitPlanner(TransitDatabase()).plan(
+        routing_database = TransitDatabase()
+        planner = TransitPlanner(routing_database)
+        if args.reliable:
+            from src.reliability.database import ReliabilityDatabase
+            from src.reliability.profiles import ProfileResolver
+            from src.reliability.ranking import rank_itineraries
+            from src.reliability.simulation import simulate_itinerary
+
+            itineraries = planner.plan_candidates(
+                args.origin,
+                args.destination,
+                args.date,
+                args.departure,
+                limit=args.alternatives,
+                max_extra_minutes=args.max_extra_minutes,
+            )
+            resolver = ProfileResolver(
+                ReliabilityDatabase(), args.minimum_samples
+            )
+            simulations = [
+                simulate_itinerary(
+                    item,
+                    resolver,
+                    simulations=args.simulations,
+                    seed=args.seed + index,
+                )
+                for index, item in enumerate(itineraries)
+            ]
+            ranked = rank_itineraries(itineraries, simulations)
+            if not ranked:
+                print("No scheduled route found.", file=sys.stderr)
+                return 1
+            print_ranked_itineraries(ranked)
+            return 0
+        itinerary = planner.plan(
             args.origin, args.destination, args.date, args.departure
         )
     except (ConfigurationError, ImportError, OSError, RuntimeError, ValueError) as exc:
