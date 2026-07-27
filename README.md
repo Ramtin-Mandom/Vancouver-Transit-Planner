@@ -6,15 +6,22 @@ arriving on time.
 
 ## PostgreSQL data ingestion
 
-The loader requires Python 3.10+, PostgreSQL, `psycopg` 3, and
+The project requires Python 3.10+, PostgreSQL, `psycopg` 3, and
 `python-dotenv`. Tests use `pytest`.
 
 Create and activate a virtual environment, then install the dependencies:
 
 ```powershell
-python -m venv .venv
+py -3.10 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt
+```
+
+Python 3.11 or newer can be selected instead if installed. Confirm that the
+activated environment is using a supported version:
+
+```powershell
+python --version
 ```
 
 Copy `.env.example` to `.env` and set `DB_HOST`, `DB_PORT`, `DB_NAME`,
@@ -63,6 +70,40 @@ python -m src.data_ingestion.cli --replace
 GTFS-backed tables in the `transit` schema. Loading is transactional, so a
 failure rolls back both truncation and inserted rows.
 
+## Scheduled transit routing
+
+The scheduled router reads the existing GTFS tables in the `transit` schema.
+It uses the same `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`
+values from `.env` as the data-ingestion commands. Routing is read-only: it
+does not create, replace, or modify database tables.
+
+Make sure PostgreSQL is running and the GTFS feed has been imported, then run:
+
+```powershell
+python -m src.routing.cli `
+  --origin STOP_ID `
+  --destination STOP_ID `
+  --date 2026-07-27 `
+  --departure 08:00:00
+```
+
+Replace `STOP_ID` with IDs from the imported `transit.stops` table. The date is
+the GTFS service date, and departure must use `HH:MM:SS`. GTFS times after
+midnight may exceed 24 hours, so values such as `25:10:00` are supported:
+
+```powershell
+python -m src.routing.cli `
+  --origin 50001 `
+  --destination 60001 `
+  --date 2026-07-27 `
+  --departure 25:10:00
+```
+
+The result lists the origin and destination, each vehicle leg, route name or
+number, trip ID, scheduled times, transfer count, and total scheduled travel
+time. If the stops exist but no active scheduled journey can be found, the
+command prints `No scheduled route found.`
+
 ### Troubleshooting
 
 - Connection errors: confirm PostgreSQL is running, the five `DB_*` values are
@@ -74,9 +115,46 @@ failure rolls back both truncation and inserted rows.
   before importing.
 - Existing-data errors: use a fresh database, or review the target carefully
   before explicitly choosing `--replace`.
+- Unknown routing stops: check that both IDs exist in `transit.stops`.
+- Unexpected routing results: confirm that the requested date is within the
+  feed's calendar range and that its `calendar_dates` exceptions are correct.
 
-Run unit tests without a PostgreSQL database:
+## Tests
+
+The unit tests use in-memory fixtures and do not require a running PostgreSQL
+database. With the virtual environment activated, run the complete suite:
 
 ```powershell
 python -m pytest
 ```
+
+Run only the routing tests:
+
+```powershell
+python -m pytest tests/routing
+```
+
+Run one routing test file:
+
+```powershell
+python -m pytest tests/routing/test_planner.py
+```
+
+Add `-v` for individual test names or `-q` for compact output:
+
+```powershell
+python -m pytest tests/routing -v
+```
+
+If the virtual environment is not activated, invoke its Python executable
+directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/routing
+```
+
+Prefer `python -m pytest` over invoking `pytest` directly. This ensures pytest
+uses the same Python interpreter and installed packages as the selected virtual
+environment. If a traceback mentions an unsupported global installation such
+as `Python38`, recreate and activate `.venv` with Python 3.10 or newer using the
+commands above.
