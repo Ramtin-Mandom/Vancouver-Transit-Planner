@@ -87,12 +87,17 @@ def run_cases(
     departure_buffer_minutes: int = 1,
     fail_fast: bool = False,
     verbose: bool = False,
+    initialization_seconds: float = 0.0,
+    structure_construction_seconds: float = 0.0,
 ) -> tuple[list[IntegrationResult], IntegrationSummary]:
     if departure_buffer_minutes < 0:
         raise ValueError("departure buffer minutes may not be negative")
     started = perf_counter()
+    loading_started = perf_counter()
     cases = select_integration_cases(database, limit)
+    gtfs_loading_seconds = perf_counter() - loading_started
     results: list[IntegrationResult] = []
+    formatting_seconds = 0.0
     for case in cases:
         requested = case.departure_time - timedelta(
             minutes=departure_buffer_minutes
@@ -102,22 +107,26 @@ def run_cases(
         failures: list[str] = []
         error = None
         try:
+            route_started = perf_counter()
             itinerary = planner.plan(
                 case.origin_stop_id,
                 case.destination_stop_id,
                 case.service_date,
                 requested,
             )
-            elapsed = perf_counter() - case_started
+            elapsed = perf_counter() - route_started
+            validation_started = perf_counter()
             failures.extend(
                 validate_itinerary(database, case, requested, itinerary)
             )
+            validation_seconds = perf_counter() - validation_started
             if elapsed > MAX_PLANNER_SECONDS:
                 failures.append(
                     f"planner call exceeded {MAX_PLANNER_SECONDS:.0f} seconds"
                 )
         except Exception as exc:  # continue the diagnostic run case-by-case
             elapsed = perf_counter() - case_started
+            validation_seconds = 0.0
             error = f"{type(exc).__name__}: {exc}"
         result = IntegrationResult(
             case=case,
@@ -125,22 +134,40 @@ def run_cases(
             itinerary=itinerary,
             failures=tuple(failures),
             elapsed_seconds=elapsed,
+            validation_seconds=validation_seconds,
             error=error,
         )
         results.append(result)
+        formatting_started = perf_counter()
         print_case_result(result, verbose=verbose)
+        formatting_seconds += perf_counter() - formatting_started
         if fail_fast and not result.passed:
             break
 
     passed = sum(result.passed for result in results)
     failed = len(results) - passed
     skipped = max(0, limit - len(results))
+    route_times = [result.elapsed_seconds for result in results]
+    route_total = sum(route_times)
     summary = IntegrationSummary(
         passed=passed,
         failed=failed,
         skipped=skipped,
         executed=len(results),
-        elapsed_seconds=perf_counter() - started,
+        elapsed_seconds=(
+            initialization_seconds
+            + structure_construction_seconds
+            + perf_counter()
+            - started
+        ),
+        initialization_seconds=initialization_seconds,
+        gtfs_loading_seconds=gtfs_loading_seconds,
+        structure_construction_seconds=structure_construction_seconds,
+        route_total_seconds=route_total,
+        route_min_seconds=min(route_times, default=0.0),
+        route_max_seconds=max(route_times, default=0.0),
+        route_average_seconds=route_total / len(route_times) if route_times else 0.0,
+        formatting_seconds=formatting_seconds,
     )
     print_summary(summary)
     return results, summary
@@ -167,8 +194,13 @@ def main() -> int:
         from .database import TransitDatabase
         from .planner import TransitPlanner
 
+        initialization_started = perf_counter()
         database = TransitDatabase()
+        database.initialize()
+        initialization_seconds = perf_counter() - initialization_started
+        structure_started = perf_counter()
         planner = TransitPlanner(database)
+        structure_seconds = perf_counter() - structure_started
         _, summary = run_cases(
             database,
             planner,
@@ -176,7 +208,10 @@ def main() -> int:
             departure_buffer_minutes=args.departure_buffer_minutes,
             fail_fast=args.fail_fast,
             verbose=args.verbose,
+            initialization_seconds=initialization_seconds,
+            structure_construction_seconds=structure_seconds,
         )
+        database.close()
     except (ConfigurationError, ImportError, OSError) as exc:
         print(f"Integration setup failed: {exc}", file=sys.stderr)
         return 2

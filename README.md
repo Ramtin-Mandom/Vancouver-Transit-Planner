@@ -1,8 +1,8 @@
 # Vancouver Transit Planner
 
-A reliability-aware transit planner that uses GTFS data, delay modeling, graph
-algorithms, and Monte Carlo simulation to rank routes by their probability of
-arriving on time.
+A scheduled transit planner that imports TransLink GTFS data into PostgreSQL
+and uses an earliest-arrival routing algorithm to find journeys. Reliability
+scoring and delay-aware route ranking are planned but are not yet implemented.
 
 ## PostgreSQL data ingestion
 
@@ -164,7 +164,21 @@ commands above.
 Real-data tests are marked `integration` and are excluded from the default test
 run. They use the PostgreSQL database configured by `.env`, perform read-only
 queries against the existing `transit` schema, and do not copy or modify GTFS
-tables.
+tables. PostgreSQL connections, sampled GTFS cases, and the planner are
+initialized once per test session and reused across all scenarios.
+
+The deterministic real-data suite covers:
+
+- direct journeys;
+- journeys with one or more transfers, when present in the feed;
+- origin/destination pairs served by multiple routes;
+- requests with no available route;
+- departures immediately before and after a scheduled trip;
+- different active service dates;
+- GTFS service-day times after `24:00:00`, when present in the feed.
+
+The reliability-scoring check is skipped until reliability scoring is exposed
+by the planner.
 
 Run all fast mocked tests explicitly:
 
@@ -196,3 +210,25 @@ python -m src.routing.integration_runner `
 Add `--fail-fast` to stop after the first failed journey. The runner returns
 exit code `0` when every executed case passes, `1` when a case fails, and `2`
 when configuration or database setup prevents the run.
+
+Each run preserves the detailed per-case itinerary report and adds a profiling
+summary containing:
+
+- one-time database initialization;
+- GTFS integration-case loading;
+- graph/routing structure construction;
+- minimum, maximum, average, and total route-search time;
+- result-formatting time;
+- total suite execution time.
+
+The router queries GTFS data lazily rather than constructing a separate
+in-memory graph, so graph/routing structure construction is normally close to
+zero. On the current development feed, ten diversified real routes complete in
+about two seconds after connection reuse, compared with roughly 130–140 seconds
+when each lookup opened a new PostgreSQL connection. Actual timing depends on
+the computer, PostgreSQL configuration, and imported feed.
+
+The relevant database lookups already use
+`idx_stop_times_stop_departure` and the `stop_times` primary key. Profiling with
+`EXPLAIN ANALYZE` showed no additional index was warranted, so the integration
+framework does not create or modify database indexes.

@@ -17,6 +17,8 @@ class IntegrationResult:
     itinerary: Itinerary | None
     failures: tuple[str, ...]
     elapsed_seconds: float
+    validation_seconds: float = 0.0
+    formatting_seconds: float = 0.0
     error: str | None = None
 
     @property
@@ -31,6 +33,14 @@ class IntegrationSummary:
     skipped: int
     executed: int
     elapsed_seconds: float
+    initialization_seconds: float = 0.0
+    gtfs_loading_seconds: float = 0.0
+    structure_construction_seconds: float = 0.0
+    route_total_seconds: float = 0.0
+    route_min_seconds: float = 0.0
+    route_max_seconds: float = 0.0
+    route_average_seconds: float = 0.0
+    formatting_seconds: float = 0.0
 
 
 def print_case_result(result: IntegrationResult, verbose: bool = False) -> None:
@@ -77,4 +87,15 @@ def print_summary(summary: IntegrationSummary) -> None:
     print(f"  Failed: {summary.failed}")
     print(f"  Skipped: {summary.skipped}")
     print(f"  Total executed: {summary.executed}")
+    print(f"  One-time initialization: {summary.initialization_seconds:.3f}s")
+    print(f"  GTFS case loading: {summary.gtfs_loading_seconds:.3f}s")
+    print(
+        "  Graph/routing structure construction: "
+        f"{summary.structure_construction_seconds:.3f}s"
+    )
+    print(f"  Minimum route-search time: {summary.route_min_seconds:.3f}s")
+    print(f"  Maximum route-search time: {summary.route_max_seconds:.3f}s")
+    print(f"  Average route-search time: {summary.route_average_seconds:.3f}s")
+    print(f"  Total route-search time: {summary.route_total_seconds:.3f}s")
+    print(f"  Result formatting time: {summary.formatting_seconds:.3f}s")
     print(f"  Total execution time: {summary.elapsed_seconds:.3f}s")

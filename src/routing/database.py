@@ -52,15 +52,36 @@ class TransitDatabase:
 
     def __init__(self, config: DatabaseConfig | None = None) -> None:
         self.config = config or DatabaseConfig.from_environment()
+        self._session: psycopg.Connection[dict[str, Any]] | None = None
+
+    def initialize(self) -> None:
+        """Open the reusable read-only session eagerly."""
+        if self._session is None or self._session.closed:
+            self._session = psycopg.connect(
+                **self.config.connection_kwargs(),
+                row_factory=dict_row,
+                autocommit=True,
+                options="-c default_transaction_read_only=on",
+            )
+
+    def close(self) -> None:
+        if self._session is not None and not self._session.closed:
+            self._session.close()
+        self._session = None
+
+    def __enter__(self) -> "TransitDatabase":
+        self.initialize()
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.close()
 
     @contextmanager
     def _connection(self) -> Iterator[psycopg.Connection[dict[str, Any]]]:
-        with psycopg.connect(
-            **self.config.connection_kwargs(),
-            row_factory=dict_row,
-            options="-c default_transaction_read_only=on",
-        ) as connection:
-            yield connection
+        self.initialize()
+        if self._session is None:  # pragma: no cover - initialize guarantees it
+            raise RuntimeError("PostgreSQL session initialization failed")
+        yield self._session
 
     def find_stop(self, stop_id: str) -> Stop | None:
         query = """
@@ -250,10 +271,18 @@ class TransitDatabase:
     def integration_case_rows(self, limit: int) -> list[dict[str, Any]]:
         """Select deterministic real journeys and one valid service date each."""
         query = """
-            WITH sampled_trips AS MATERIALIZED (
-                SELECT trip_id, service_id, route_id
+            WITH ranked_trips AS MATERIALIZED (
+                SELECT trip_id, service_id, route_id,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY route_id ORDER BY trip_id
+                       ) AS route_trip_rank
                 FROM transit.trips
-                ORDER BY trip_id
+            ),
+            sampled_trips AS MATERIALIZED (
+                SELECT trip_id, service_id, route_id
+                FROM ranked_trips
+                WHERE route_trip_rank = 1
+                ORDER BY route_id, trip_id
                 LIMIT 500
             ),
             active_service AS MATERIALIZED (
@@ -337,15 +366,28 @@ class TransitDatabase:
                 WHERE origin.departure_time IS NOT NULL
                   AND COALESCE(origin.pickup_type, 0) <> 1
             )
+            , unique_pairs AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY source_route_id
+                           ORDER BY service_date, departure_time,
+                                    source_trip_id, origin_stop_id,
+                                    destination_stop_id
+                       ) AS route_rank
+                FROM candidate
+                WHERE pair_rank = 1
+            )
             SELECT origin_stop_id, origin_stop_name,
                    destination_stop_id, destination_stop_name,
                    service_date, departure_time, source_trip_id,
                    source_route_id, source_route_name,
                    scheduled_source_arrival
-            FROM candidate
-            WHERE pair_rank = 1
-            ORDER BY service_date, departure_time, source_trip_id,
-                     origin_stop_id, destination_stop_id
+            FROM unique_pairs
+            WHERE route_rank = 1
+            ORDER BY
+                (departure_time >= INTERVAL '24 hours') DESC,
+                service_date, source_route_id, source_trip_id,
+                origin_stop_id, destination_stop_id
             LIMIT %s
         """
         with self._connection() as connection:
@@ -389,3 +431,59 @@ class TransitDatabase:
         with self._connection() as connection:
             row = connection.execute(query, parameters).fetchone()
         return bool(row and row["present"])
+
+    def route_count_between(self, origin_stop_id: str, destination_stop_id: str) -> int:
+        """Count scheduled routes that serve an ordered stop pair."""
+        query = """
+            SELECT COUNT(DISTINCT t.route_id) AS route_count
+            FROM transit.stop_times AS origin
+            JOIN transit.stop_times AS destination
+              ON destination.trip_id = origin.trip_id
+             AND destination.stop_sequence > origin.stop_sequence
+            JOIN transit.trips AS t ON t.trip_id = origin.trip_id
+            WHERE origin.stop_id = %s
+              AND destination.stop_id = %s
+        """
+        with self._connection() as connection:
+            row = connection.execute(
+                query, (origin_stop_id, destination_stop_id)
+            ).fetchone()
+        return int(row["route_count"]) if row else 0
+
+    def next_operating_date_for_trip(
+        self, trip_id: str, after_date: date
+    ) -> date | None:
+        """Find a later active date for deterministic calendar coverage."""
+        query = """
+            SELECT candidate.service_date
+            FROM transit.trips AS t
+            JOIN transit.calendar AS c ON c.service_id = t.service_id
+            JOIN LATERAL (
+                SELECT service_day::date AS service_date
+                FROM generate_series(
+                    %s::date + 1, c.end_date, INTERVAL '1 day'
+                ) AS service_day
+                LEFT JOIN transit.calendar_dates AS exception
+                  ON exception.service_id = c.service_id
+                 AND exception.service_date = service_day::date
+                WHERE exception.exception_type = 1
+                   OR (
+                        exception.exception_type IS DISTINCT FROM 2
+                        AND CASE EXTRACT(ISODOW FROM service_day)
+                            WHEN 1 THEN c.monday
+                            WHEN 2 THEN c.tuesday
+                            WHEN 3 THEN c.wednesday
+                            WHEN 4 THEN c.thursday
+                            WHEN 5 THEN c.friday
+                            WHEN 6 THEN c.saturday
+                            WHEN 7 THEN c.sunday
+                        END
+                   )
+                ORDER BY service_day
+                LIMIT 1
+            ) AS candidate ON TRUE
+            WHERE t.trip_id = %s
+        """
+        with self._connection() as connection:
+            row = connection.execute(query, (after_date, trip_id)).fetchone()
+        return row["service_date"] if row else None
