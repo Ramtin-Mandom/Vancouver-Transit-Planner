@@ -51,17 +51,27 @@ class FakeDatabase:
     def find_stop(self, stop_id):
         return self.stops.get(stop_id)
 
-    def departures_from(self, stop_id, earliest_time):
-        return sorted(
+    def departures_from(
+        self,
+        stop_id,
+        earliest_time,
+        *,
+        limit=64,
+        offset=0,
+        service_ids=None,
+    ):
+        departures = sorted(
             (
                 hop
                 for trip in self.trips.values()
                 for hop in trip
                 if hop.from_stop_id == stop_id
                 and hop.departure_time >= earliest_time
+                and (service_ids is None or hop.service_id in service_ids)
             ),
             key=lambda hop: hop.departure_time,
         )
+        return departures[offset : offset + limit]
 
     def trip_connections(self, trip_id, from_stop_sequence):
         return [
@@ -162,3 +172,60 @@ def test_gtfs_time_greater_than_24_hours():
     assert result is not None
     assert result.legs[0].departure_time == at(25, 10)
     assert result.arrival_time == at(25, 30)
+
+
+def test_later_departures_are_not_scanned_after_destination_is_reached():
+    first = [
+        connection("EARLY", "weekday", "10", "A", "B", at(8), at(8, 20))
+    ]
+    later_trips = {
+        f"LATE-{number}": [
+            connection(
+                f"LATE-{number}",
+                "weekday",
+                "10",
+                "A",
+                "B",
+                at(9 + number),
+                at(9 + number, 20),
+            )
+        ]
+        for number in range(10)
+    }
+
+    class CountingDatabase(FakeDatabase):
+        def __init__(self):
+            super().__init__(
+                stops("A", "B"), {"EARLY": first, **later_trips}
+            )
+            self.scanned_trip_ids = []
+
+        def trip_connections(self, trip_id, from_stop_sequence):
+            self.scanned_trip_ids.append(trip_id)
+            return super().trip_connections(trip_id, from_stop_sequence)
+
+    database = CountingDatabase()
+    result = TransitPlanner(database).plan("A", "B", MONDAY, at(7, 59))
+
+    assert result is not None
+    assert result.arrival_time == at(8, 20)
+    assert database.scanned_trip_ids == ["EARLY"]
+
+
+def test_bulk_active_service_lookup_is_used_when_available():
+    trip = [
+        connection("T1", "inactive", "10", "A", "B", at(8), at(8, 20))
+    ]
+
+    class BulkCalendarDatabase(FakeDatabase):
+        def active_service_ids(self, service_date):
+            return {"inactive"}
+
+        def calendar_rule(self, service_id):
+            raise AssertionError("per-service calendar lookup should not run")
+
+    database = BulkCalendarDatabase(stops("A", "B"), {"T1": trip}, rules={})
+    result = TransitPlanner(database).plan("A", "B", MONDAY, at(7, 59))
+
+    assert result is not None
+    assert result.arrival_time == at(8, 20)

@@ -158,3 +158,41 @@ uses the same Python interpreter and installed packages as the selected virtual
 environment. If a traceback mentions an unsupported global installation such
 as `Python38`, recreate and activate `.venv` with Python 3.10 or newer using the
 commands above.
+
+### Real GTFS integration tests
+
+Real-data tests are marked `integration` and are excluded from the default test
+run. They use the PostgreSQL database configured by `.env`, perform read-only
+queries against the existing `transit` schema, and do not copy or modify GTFS
+tables.
+
+Run all fast mocked tests explicitly:
+
+```powershell
+python -m pytest -m "not integration" -v
+```
+
+Run the real PostgreSQL integration test and show its case reports:
+
+```powershell
+python -m pytest -m integration -s
+```
+
+Run the user-friendly integration framework directly:
+
+```powershell
+python -m src.routing.integration_runner --limit 10
+```
+
+Optional runner arguments include:
+
+```powershell
+python -m src.routing.integration_runner `
+  --limit 10 `
+  --departure-buffer-minutes 1 `
+  --verbose
+```
+
+Add `--fail-fast` to stop after the first failed journey. The runner returns
+exit code `0` when every executed case passes, `1` when a case fails, and `2`
+when configuration or database setup prevents the run.

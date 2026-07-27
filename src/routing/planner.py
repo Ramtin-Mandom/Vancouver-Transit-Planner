@@ -16,7 +16,13 @@ class RoutingRepository(Protocol):
     def find_stop(self, stop_id: str) -> Stop | None: ...
 
     def departures_from(
-        self, stop_id: str, earliest_time: timedelta
+        self,
+        stop_id: str,
+        earliest_time: timedelta,
+        *,
+        limit: int = 64,
+        offset: int = 0,
+        service_ids: set[str] | None = None,
     ) -> list[Connection]: ...
 
     def trip_connections(
@@ -62,6 +68,14 @@ class TransitPlanner:
                 origin, destination, service_date, departure_time, departure_time, ()
             )
 
+        active_service_lookup = getattr(
+            self.database, "active_service_ids", None
+        )
+        active_service_ids = (
+            active_service_lookup(service_date)
+            if callable(active_service_lookup)
+            else None
+        )
         best: dict[str, timedelta] = {origin_stop_id: departure_time}
         previous: dict[str, _Ride | _Walk] = {}
         queue: list[tuple[timedelta, int, str]] = []
@@ -76,7 +90,15 @@ class TransitPlanner:
                 break
 
             self._relax_departures(
-                stop_id, reached_at, service_date, best, previous, queue, sequence
+                stop_id,
+                destination_stop_id,
+                reached_at,
+                service_date,
+                active_service_ids,
+                best,
+                previous,
+                queue,
+                sequence,
             )
             self._relax_transfers(
                 stop_id, reached_at, best, previous, queue, sequence
@@ -96,8 +118,10 @@ class TransitPlanner:
     def _relax_departures(
         self,
         stop_id: str,
+        destination_stop_id: str,
         reached_at: timedelta,
         service_date: date,
+        active_service_ids: set[str] | None,
         best: dict[str, timedelta],
         previous: dict[str, _Ride | _Walk],
         queue: list[tuple[timedelta, int, str]],
@@ -108,49 +132,81 @@ class TransitPlanner:
             prior.connection.trip_id if isinstance(prior, _Ride) else None
         )
         transfer_rules = self.database.transfers_from(stop_id)
-        for first in self.database.departures_from(stop_id, reached_at):
-            if not self.calendar.operates(first.service_id, service_date):
-                continue
-            if prior_trip_id and first.trip_id != prior_trip_id:
-                matching = [
-                    rule
-                    for rule in transfer_rules
-                    if rule["to_stop_id"] == stop_id
-                    and (rule.get("from_trip_id") in (None, prior_trip_id))
-                    and (rule.get("to_trip_id") in (None, first.trip_id))
-                ]
-                if any(rule["transfer_type"] == 3 for rule in matching):
-                    continue
-                minimum = max(
-                    (rule["min_transfer_time"] or 0 for rule in matching),
-                    default=0,
-                )
-                if first.departure_time < reached_at + timedelta(seconds=minimum):
-                    continue
-            # Once a trip is boardable, scan only that trip's remaining
-            # consecutive stops. This preserves through-rides without a global
-            # stop_times load.
-            connections = self.database.trip_connections(
-                first.trip_id, first.from_stop_sequence
+        scanned_trips: set[str] = set()
+        batch_size = 64
+        offset = 0
+        while True:
+            departures = self.database.departures_from(
+                stop_id,
+                reached_at,
+                limit=batch_size,
+                offset=offset,
+                service_ids=active_service_ids,
             )
-            current_stop = stop_id
-            current_time = reached_at
-            for connection in connections:
-                if connection.from_stop_id != current_stop:
+            if not departures:
+                break
+            destination_reached = False
+            for first in departures:
+                # Departures are ordered. Once a known destination arrival is
+                # no later than this departure, no later trip can improve it.
+                if first.departure_time >= best.get(
+                    destination_stop_id, timedelta.max
+                ):
+                    destination_reached = True
                     break
-                if connection.departure_time < current_time:
-                    break
-                self._relax(
-                    connection.to_stop_id,
-                    connection.arrival_time,
-                    _Ride(current_stop, connection),
-                    best,
-                    previous,
-                    queue,
-                    sequence,
+                operates = (
+                    first.service_id in active_service_ids
+                    if active_service_ids is not None
+                    else self.calendar.operates(first.service_id, service_date)
                 )
-                current_stop = connection.to_stop_id
-                current_time = connection.arrival_time
+                if not operates:
+                    continue
+                if first.trip_id in scanned_trips:
+                    continue
+                scanned_trips.add(first.trip_id)
+                if prior_trip_id and first.trip_id != prior_trip_id:
+                    matching = [
+                        rule
+                        for rule in transfer_rules
+                        if rule["to_stop_id"] == stop_id
+                        and (rule.get("from_trip_id") in (None, prior_trip_id))
+                        and (rule.get("to_trip_id") in (None, first.trip_id))
+                    ]
+                    if any(rule["transfer_type"] == 3 for rule in matching):
+                        continue
+                    minimum = max(
+                        (rule["min_transfer_time"] or 0 for rule in matching),
+                        default=0,
+                    )
+                    if first.departure_time < reached_at + timedelta(
+                        seconds=minimum
+                    ):
+                        continue
+                # Once boardable, scan only this trip's remaining stops.
+                connections = self.database.trip_connections(
+                    first.trip_id, first.from_stop_sequence
+                )
+                current_stop = stop_id
+                current_time = reached_at
+                for connection in connections:
+                    if connection.from_stop_id != current_stop:
+                        break
+                    if connection.departure_time < current_time:
+                        break
+                    self._relax(
+                        connection.to_stop_id,
+                        connection.arrival_time,
+                        _Ride(current_stop, connection),
+                        best,
+                        previous,
+                        queue,
+                        sequence,
+                    )
+                    current_stop = connection.to_stop_id
+                    current_time = connection.arrival_time
+            if destination_reached or len(departures) < batch_size:
+                break
+            offset += batch_size
 
     def _relax_transfers(
         self,
