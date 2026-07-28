@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.reliability.models import ProfileSelection
 
 
 @dataclass(frozen=True)
@@ -61,3 +65,38 @@ class Itinerary:
     @property
     def total_scheduled_travel_time(self) -> timedelta:
         return self.arrival_time - self.departure_time
+
+
+@dataclass(frozen=True)
+class SearchTiming:
+    data_loading_ms: float
+    search_ms: float
+    ranking_ms: float
+    total_ms: float
+
+
+@dataclass(frozen=True)
+class ReliableAlternative:
+    """An itinerary with the analytic reliability used during its search."""
+
+    itinerary: Itinerary
+    route_reliability: float
+    reliability_cost: float
+    profile_selections: tuple["ProfileSelection", ...]
+    speed_component: float = 0.0
+    combined_score: float = 0.0
+
+    @property
+    def insufficient_data(self) -> bool:
+        return any(item.insufficient_data for item in self.profile_selections)
+
+    @property
+    def fallback_levels(self) -> tuple[str, ...]:
+        return tuple(item.fallback_level for item in self.profile_selections)
+
+
+@dataclass(frozen=True)
+class ReliableSearchResult:
+    alternatives: tuple[ReliableAlternative, ...]
+    timing: SearchTiming
+    labels_pruned: int

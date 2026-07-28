@@ -46,15 +46,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max-extra-minutes", type=int, default=30)
     parser.add_argument("--minimum-samples", type=int, default=20)
+    parser.add_argument("--search-timeout-seconds", type=float, default=30.0)
     return parser
 
 
 def print_itinerary(itinerary: Itinerary) -> None:
-    print(f"{itinerary.origin.stop_name} → {itinerary.destination.stop_name}")
+    print(f"{itinerary.origin.stop_name} -> {itinerary.destination.stop_name}")
     for number, leg in enumerate(itinerary.legs, start=1):
         print(
             f"{number}. {leg.route_name} | trip {leg.trip_id} | "
-            f"{leg.origin.stop_name} {format_gtfs_time(leg.departure_time)} → "
+            f"{leg.origin.stop_name} {format_gtfs_time(leg.departure_time)} -> "
             f"{leg.destination.stop_name} {format_gtfs_time(leg.arrival_time)}"
         )
     print(f"Transfers: {itinerary.transfer_count}")
@@ -66,7 +67,7 @@ def print_itinerary(itinerary: Itinerary) -> None:
 
 def print_ranked_itineraries(ranked) -> None:
     for rank, item in enumerate(ranked, start=1):
-        print(f"\nAlternative {rank} — reliability score {item.reliability_score:.1f}")
+        print(f"\nAlternative {rank} - reliability score {item.reliability_score:.1f}")
         print_itinerary(item.itinerary)
         result = item.simulation
         print(f"Completion probability: {result.completion_probability:.1%}")
@@ -74,9 +75,9 @@ def print_ranked_itineraries(ranked) -> None:
         print(f"Speed ratio: {item.speed_ratio:.3f}")
         print(
             "Score components: "
-            f"0.55×{result.completion_probability:.3f} + "
-            f"0.25×{item.schedule_adherence:.3f} + "
-            f"0.20×{item.speed_ratio:.3f}"
+            f"0.55*{result.completion_probability:.3f} + "
+            f"0.25*{item.schedule_adherence:.3f} + "
+            f"0.20*{item.speed_ratio:.3f}"
         )
         print(
             "On-time arrival probability (<= 10 min): "
@@ -86,6 +87,28 @@ def print_ranked_itineraries(ranked) -> None:
         print(f"P90 arrival delay: {result.p90_arrival_delay_seconds:.0f}s")
         print("Profile fallback levels: " + ", ".join(result.fallback_levels))
         print(f"Insufficient data: {'yes' if result.insufficient_data else 'no'}")
+
+
+def print_reliable_alternatives(result) -> None:
+    for rank, item in enumerate(result.alternatives, start=1):
+        print(f"\nAlternative {rank} - combined score {item.combined_score:.1f}")
+        print_itinerary(item.itinerary)
+        print(f"Scheduled arrival: {format_gtfs_time(item.itinerary.arrival_time)}")
+        print(f"Route reliability: {item.route_reliability:.2%}")
+        print(f"Speed component: {item.speed_component:.3f}")
+        print("Score components: "
+              f"0.80*{item.route_reliability:.3f} + "
+              f"0.20*{item.speed_component:.3f}")
+        print("Profile fallback levels: " + ", ".join(item.fallback_levels))
+        print(f"Insufficient data: {'yes' if item.insufficient_data else 'no'}")
+    timing = result.timing
+    print(
+        "\nSearch timing: "
+        f"load {timing.data_loading_ms:.2f} ms, "
+        f"search {timing.search_ms:.2f} ms, "
+        f"ranking {timing.ranking_ms:.2f} ms, "
+        f"total {timing.total_ms:.2f} ms"
+    )
 
 
 def main() -> int:
@@ -100,34 +123,26 @@ def main() -> int:
         if args.reliable:
             from src.reliability.database import ReliabilityDatabase
             from src.reliability.profiles import ProfileResolver
-            from src.reliability.ranking import rank_itineraries
-            from src.reliability.simulation import simulate_itinerary
-
-            itineraries = planner.plan_candidates(
+            reliability_database = ReliabilityDatabase()
+            resolver = ProfileResolver(
+                reliability_database, args.minimum_samples
+            )
+            result = planner.plan_reliable_alternatives(
                 args.origin,
                 args.destination,
                 args.date,
                 args.departure,
+                resolver,
                 limit=args.alternatives,
                 max_extra_minutes=args.max_extra_minutes,
+                timeout_seconds=args.search_timeout_seconds,
             )
-            resolver = ProfileResolver(
-                ReliabilityDatabase(), args.minimum_samples
-            )
-            simulations = [
-                simulate_itinerary(
-                    item,
-                    resolver,
-                    simulations=args.simulations,
-                    seed=args.seed + index,
-                )
-                for index, item in enumerate(itineraries)
-            ]
-            ranked = rank_itineraries(itineraries, simulations)
-            if not ranked:
+            if not result.alternatives:
+                reliability_database.close()
                 print("No scheduled route found.", file=sys.stderr)
                 return 1
-            print_ranked_itineraries(ranked)
+            print_reliable_alternatives(result)
+            reliability_database.close()
             return 0
         itinerary = planner.plan(
             args.origin, args.destination, args.date, args.departure

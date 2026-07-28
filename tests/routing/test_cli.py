@@ -18,3 +18,4 @@ def test_reliable_options_are_opt_in_and_scheduled_cli_is_compatible():
     )
     assert not args.reliable
     assert args.alternatives == 5
+    assert args.search_timeout_seconds == 30.0

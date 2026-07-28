@@ -173,6 +173,28 @@ class TransitPlanner:
             search_time = next_search
         return candidates
 
+    def plan_reliable_alternatives(
+        self,
+        origin_stop_id: str,
+        destination_stop_id: str,
+        service_date: date,
+        departure_time: timedelta,
+        resolver: Any,
+        **bounds: Any,
+    ):
+        """Run the bounded multi-label search used by reliable routing."""
+        from .reliable import ParetoTransitSearch
+
+        return ParetoTransitSearch(
+            self.database, self.calendar, resolver
+        ).search(
+            origin_stop_id,
+            destination_stop_id,
+            service_date,
+            departure_time,
+            **bounds,
+        )
+
     def _relax_departures(
         self,
         stop_id: str,
