@@ -20,11 +20,43 @@ class ReliabilityDatabase:
     def __init__(self, config: DatabaseConfig | None = None) -> None:
         self.config = config or DatabaseConfig.from_environment()
         self._lookup_connection = None
+        self._profile_connection = None
         self._schedule_cache: dict[str, list[ScheduledStop]] = {}
+        self._statement_timeout_ms = 30_000
+
+    def set_statement_timeout(self, milliseconds: int) -> None:
+        self._statement_timeout_ms = max(1, milliseconds)
+        if self._profile_connection is not None:
+            self._profile_connection.execute(
+                "SELECT set_config('statement_timeout', %s, false)",
+                (str(self._statement_timeout_ms),),
+            )
+
+    def close(self) -> None:
+        if self._profile_connection is not None:
+            self._profile_connection.close()
+        self._profile_connection = None
+
+    def _profile_session(self):
+        if self._profile_connection is None or self._profile_connection.closed:
+            self._profile_connection = psycopg.connect(
+                **self.config.connection_kwargs(),
+                row_factory=dict_row,
+                autocommit=True,
+                options=(
+                    "-c default_transaction_read_only=on "
+                    f"-c statement_timeout={self._statement_timeout_ms}"
+                ),
+            )
+        return self._profile_connection
 
     @contextmanager
     def connection(self, *, readonly: bool = True) -> Iterator:
-        options = "-c default_transaction_read_only=on" if readonly else None
+        options = (
+            "-c default_transaction_read_only=on "
+            f"-c statement_timeout={self._statement_timeout_ms}"
+            if readonly else None
+        )
         with psycopg.connect(
             **self.config.connection_kwargs(),
             row_factory=dict_row,
@@ -105,8 +137,7 @@ class ReliabilityDatabase:
             LIMIT 1
         """
         params = (trip_id, stop_id, stop_id, stop_sequence, stop_sequence)
-        with self.connection() as connection:
-            row = connection.execute(query, params).fetchone()
+        row = self._profile_session().execute(query, params).fetchone()
         if not row or row["scheduled_arrival"] is None:
             return None
         return ScheduledStop(**row)
@@ -253,58 +284,53 @@ class ReliabilityDatabase:
         weekday: int | None,
         hour: int | None,
     ) -> ReliabilityProfile | None:
+        # route_reliability is the materialized result of aggregate_profiles().
+        # Reading it avoids rebuilding the DISTINCT-ON observation aggregate
+        # for every label expansion. Broader fallbacks are sample-weighted
+        # aggregates of those exact route/stop/weekday/hour cells.
         query = """
-            WITH latest AS (
-                SELECT DISTINCT ON (
-                    observation.trip_id, observation.stop_id,
-                    observation.stop_sequence, observation.service_date
-                )
-                    observation.*, trip.route_id
-                FROM transit.delay_observations AS observation
-                JOIN transit.trips AS trip
-                  ON trip.trip_id = observation.trip_id
-                ORDER BY observation.trip_id, observation.stop_id,
-                         observation.stop_sequence, observation.service_date,
-                         observation.observed_at DESC
-            )
             SELECT
                 %s::text AS route_id, %s::text AS stop_id,
                 %s::integer AS weekday, %s::integer AS hour_of_day,
-                COUNT(*)::integer AS sample_count,
-                AVG(delay_seconds)::double precision AS mean_delay_seconds,
-                AVG(ABS(delay_seconds))::double precision
-                    AS mean_absolute_delay_seconds,
-                STDDEV_SAMP(delay_seconds)::double precision
-                    AS delay_stddev_seconds,
-                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY delay_seconds)
-                    ::double precision AS p50_delay_seconds,
-                PERCENTILE_CONT(0.9) WITHIN GROUP (ORDER BY delay_seconds)
-                    ::double precision AS p90_delay_seconds,
-                AVG(CASE WHEN delay_seconds < {early} THEN 1.0 ELSE 0.0 END)
-                    ::double precision AS early_probability,
-                AVG(CASE
-                    WHEN delay_seconds BETWEEN {early} AND {late}
-                    THEN 1.0 ELSE 0.0 END
+                COALESCE(SUM(sample_count), 0)::integer AS sample_count,
+                (
+                    SUM(mean_delay_seconds * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS mean_delay_seconds,
+                (
+                    SUM(COALESCE(mean_absolute_delay_seconds, 0) * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS mean_absolute_delay_seconds,
+                (
+                    SUM(COALESCE(delay_stddev_seconds, 0) * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS delay_stddev_seconds,
+                (
+                    SUM(p50_delay_seconds * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS p50_delay_seconds,
+                (
+                    SUM(p90_delay_seconds * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS p90_delay_seconds,
+                (
+                    SUM(COALESCE(early_probability, 0) * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS early_probability,
+                (
+                    SUM(on_time_probability * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
                 )::double precision AS on_time_probability,
-                AVG(CASE WHEN delay_seconds > {late} THEN 1.0 ELSE 0.0 END)
-                    ::double precision AS late_probability
-            FROM latest
+                (
+                    SUM(COALESCE(late_probability, 0) * sample_count)
+                    / NULLIF(SUM(sample_count), 0)
+                )::double precision AS late_probability
+            FROM transit.route_reliability
             WHERE (%s::text IS NULL OR route_id = %s)
               AND (%s::text IS NULL OR stop_id = %s)
-              AND (
-                  %s::integer IS NULL
-                  OR EXTRACT(ISODOW FROM service_date)::integer - 1 = %s
-              )
-              AND (
-                  %s::integer IS NULL
-                  OR MOD(
-                      FLOOR(EXTRACT(EPOCH FROM scheduled_arrival) / 3600), 24
-                  )::integer = %s
-              )
-        """.format(
-            early=EARLY_THRESHOLD_SECONDS,
-            late=LATE_THRESHOLD_SECONDS,
-        )
+              AND (%s::integer IS NULL OR weekday = %s)
+              AND (%s::integer IS NULL OR hour_of_day = %s)
+        """
         params = (
             route_id, stop_id, weekday, hour,
             route_id, route_id, stop_id, stop_id,
@@ -322,8 +348,9 @@ class ReliabilityDatabase:
             WHERE route_id = %s
             ORDER BY stop_id, weekday, hour_of_day
         """
-        with self.connection() as connection:
-            return list(connection.execute(query, (route_id,)).fetchall())
+        return list(
+            self._profile_session().execute(query, (route_id,)).fetchall()
+        )
 
     def count_profiles_below(self, minimum_samples: int) -> int:
         query = """

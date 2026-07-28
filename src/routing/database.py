@@ -69,6 +69,15 @@ class TransitDatabase:
             self._session.close()
         self._session = None
 
+    def set_statement_timeout(self, milliseconds: int) -> None:
+        """Bound each PostgreSQL statement for a reliable-search request."""
+        self.initialize()
+        if self._session is not None:
+            self._session.execute(
+                "SELECT set_config('statement_timeout', %s, false)",
+                (str(max(1, milliseconds)),),
+            )
+
     def __enter__(self) -> "TransitDatabase":
         self.initialize()
         return self
@@ -165,6 +174,52 @@ class TransitDatabase:
                     max(1, limit),
                     max(0, offset),
                 ),
+            ).fetchall()
+        return [_connection(row) for row in rows]
+
+    def departures_in_window(
+        self,
+        stop_id: str,
+        earliest_time: timedelta,
+        latest_time: timedelta,
+        *,
+        service_ids: set[str] | None = None,
+    ) -> list[Connection]:
+        """Fetch one stop's bounded departures without OFFSET pagination."""
+        if service_ids is not None and not service_ids:
+            return []
+        query = """
+            SELECT t.trip_id, t.service_id, t.route_id,
+                   r.route_short_name, r.route_long_name,
+                   current.stop_id AS from_stop_id,
+                   following.stop_id AS to_stop_id,
+                   current.departure_time, following.arrival_time,
+                   current.stop_sequence AS from_stop_sequence,
+                   following.stop_sequence AS to_stop_sequence
+            FROM transit.stop_times AS current
+            JOIN transit.trips AS t ON t.trip_id = current.trip_id
+            JOIN transit.routes AS r ON r.route_id = t.route_id
+            JOIN LATERAL (
+                SELECT stop_id, arrival_time, stop_sequence
+                FROM transit.stop_times
+                WHERE trip_id = current.trip_id
+                  AND stop_sequence > current.stop_sequence
+                ORDER BY stop_sequence LIMIT 1
+            ) AS following ON TRUE
+            WHERE current.stop_id = %s
+              AND current.departure_time BETWEEN %s AND %s
+              AND (%s::text[] IS NULL OR t.service_id = ANY(%s::text[]))
+              AND COALESCE(current.pickup_type, 0) <> 1
+              AND current.departure_time IS NOT NULL
+              AND following.arrival_time IS NOT NULL
+            ORDER BY current.departure_time, current.trip_id,
+                     current.stop_sequence
+        """
+        services = sorted(service_ids) if service_ids is not None else None
+        with self._connection() as connection:
+            rows = connection.execute(
+                query,
+                (stop_id, earliest_time, latest_time, services, services),
             ).fetchall()
         return [_connection(row) for row in rows]
 

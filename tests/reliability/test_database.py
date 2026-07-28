@@ -26,6 +26,18 @@ def test_aggregation_selects_latest_observation_only():
     assert "observed_at DESC" in source
 
 
+def test_profile_lookup_reads_materialized_profiles():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "src" / "reliability" / "database.py").read_text(
+        encoding="utf-8"
+    )
+    profile_source = source[source.index("    def profile("):]
+    assert "FROM transit.route_reliability" in profile_source
+    assert "FROM latest" not in profile_source.split(
+        "    def route_profiles", 1
+    )[0]
+
+
 def test_duplicate_snapshot_count_uses_batch_insert_result():
     class Cursor:
         rowcount = 1
