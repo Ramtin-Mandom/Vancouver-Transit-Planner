@@ -176,90 +176,146 @@ class ReliabilityDatabase:
                 inserted = cursor.rowcount
         return inserted, len(values) - inserted
 
-    def aggregate_profiles(self) -> tuple[int, int, int]:
-        latest = """
+    def aggregate_profiles(
+        self,
+        *,
+        full_rebuild: bool = False,
+        early_threshold: int = -120,
+        late_threshold: int = 300,
+        shrinkage_strength: float = 20.0,
+        minimum_samples: int = 20,
+    ) -> tuple[int, int, int, int]:
+        sample_upsert = """
             WITH latest AS (
                 SELECT DISTINCT ON (
                     trip_id, stop_id, stop_sequence, service_date
                 )
                     trip_id, stop_id, stop_sequence, service_date,
-                    scheduled_arrival, delay_seconds
+                    scheduled_arrival, observed_at, delay_seconds
                 FROM transit.delay_observations
                 ORDER BY trip_id, stop_id, stop_sequence, service_date,
                          observed_at DESC
-            ),
-            aggregated AS (
+            ), samples AS (
                 SELECT
+                    latest.trip_id, latest.service_date,
                     t.route_id,
-                    latest.stop_id,
-                    EXTRACT(ISODOW FROM latest.service_date)::integer - 1
-                        AS weekday,
-                    MOD(
-                        FLOOR(EXTRACT(EPOCH FROM latest.scheduled_arrival) / 3600),
-                        24
-                    )::integer AS hour_of_day,
-                    COUNT(*)::integer AS sample_count,
-                    AVG(latest.delay_seconds)::double precision
-                        AS mean_delay_seconds,
-                    AVG(ABS(latest.delay_seconds))::double precision
-                        AS mean_absolute_delay_seconds,
-                    STDDEV_SAMP(latest.delay_seconds)::double precision
-                        AS delay_stddev_seconds,
+                    t.direction_id,
+                    transit.reliability_time_window(latest.scheduled_arrival)
+                        AS time_window,
                     PERCENTILE_CONT(0.5) WITHIN GROUP (
                         ORDER BY latest.delay_seconds
-                    )::double precision AS p50_delay_seconds,
-                    PERCENTILE_CONT(0.9) WITHIN GROUP (
-                        ORDER BY latest.delay_seconds
-                    )::double precision AS p90_delay_seconds,
-                    AVG(CASE
-                        WHEN latest.delay_seconds < {EARLY_THRESHOLD_SECONDS}
-                        THEN 1.0 ELSE 0.0
-                    END)::double precision AS early_probability,
-                    AVG(CASE
-                        WHEN latest.delay_seconds
-                             BETWEEN {EARLY_THRESHOLD_SECONDS}
-                                 AND {LATE_THRESHOLD_SECONDS}
-                        THEN 1.0 ELSE 0.0
-                    END)::double precision AS on_time_probability,
-                    AVG(CASE
-                        WHEN latest.delay_seconds > {LATE_THRESHOLD_SECONDS}
-                        THEN 1.0 ELSE 0.0
-                    END)::double precision AS late_probability
+                    )::double precision AS representative_delay_seconds,
+                    COUNT(*)::integer AS eligible_stop_count,
+                    MAX(latest.observed_at) AS source_max_observed_at
                 FROM latest
                 JOIN transit.trips AS t ON t.trip_id = latest.trip_id
-                GROUP BY t.route_id, latest.stop_id, weekday, hour_of_day
+                WHERE latest.scheduled_arrival IS NOT NULL
+                GROUP BY latest.trip_id, latest.service_date, t.route_id,
+                         t.direction_id, time_window
             )
-            INSERT INTO transit.route_reliability (
-                route_id, stop_id, weekday, hour_of_day, sample_count,
-                mean_delay_seconds, mean_absolute_delay_seconds,
-                delay_stddev_seconds, p50_delay_seconds, p90_delay_seconds,
-                early_probability, on_time_probability, late_probability,
-                updated_at
+            INSERT INTO transit.trip_reliability_samples (
+                trip_id, service_date, time_window, route_id, direction_id,
+                representative_delay_seconds, eligible_stop_count,
+                source_max_observed_at, updated_at
             )
-            SELECT route_id, stop_id, weekday, hour_of_day, sample_count,
-                   mean_delay_seconds, mean_absolute_delay_seconds,
-                   delay_stddev_seconds, p50_delay_seconds,
-                   p90_delay_seconds, early_probability,
-                   on_time_probability, late_probability, CURRENT_TIMESTAMP
-            FROM aggregated
-            ON CONFLICT (route_id, stop_id, weekday, hour_of_day)
+            SELECT trip_id, service_date, time_window, route_id, direction_id,
+                   representative_delay_seconds, eligible_stop_count,
+                   source_max_observed_at, CURRENT_TIMESTAMP
+            FROM samples
+            ON CONFLICT (trip_id, service_date, time_window)
             DO UPDATE SET
-                sample_count = EXCLUDED.sample_count,
-                mean_delay_seconds = EXCLUDED.mean_delay_seconds,
-                mean_absolute_delay_seconds =
-                    EXCLUDED.mean_absolute_delay_seconds,
-                delay_stddev_seconds = EXCLUDED.delay_stddev_seconds,
-                p50_delay_seconds = EXCLUDED.p50_delay_seconds,
-                p90_delay_seconds = EXCLUDED.p90_delay_seconds,
-                early_probability = EXCLUDED.early_probability,
-                on_time_probability = EXCLUDED.on_time_probability,
-                late_probability = EXCLUDED.late_probability,
-                updated_at = CURRENT_TIMESTAMP
-            RETURNING sample_count
-        """.format(
-            EARLY_THRESHOLD_SECONDS=EARLY_THRESHOLD_SECONDS,
-            LATE_THRESHOLD_SECONDS=LATE_THRESHOLD_SECONDS,
-        )
+                route_id = EXCLUDED.route_id,
+                direction_id = EXCLUDED.direction_id,
+                representative_delay_seconds =
+                    EXCLUDED.representative_delay_seconds,
+                eligible_stop_count = EXCLUDED.eligible_stop_count,
+                source_max_observed_at = EXCLUDED.source_max_observed_at,
+                updated_at = CASE WHEN
+                    transit.trip_reliability_samples.source_max_observed_at
+                        IS DISTINCT FROM EXCLUDED.source_max_observed_at
+                    OR transit.trip_reliability_samples.representative_delay_seconds
+                        IS DISTINCT FROM EXCLUDED.representative_delay_seconds
+                    THEN CURRENT_TIMESTAMP
+                    ELSE transit.trip_reliability_samples.updated_at
+                END
+        """
+        rebuild_fallbacks = """
+            DELETE FROM transit.reliability_fallback_profiles;
+            WITH network AS (
+                SELECT COUNT(*)::integer n, COUNT(DISTINCT service_date)::integer d,
+                       AVG((representative_delay_seconds BETWEEN %s AND %s)::int)
+                           ::double precision p
+                FROM transit.trip_reliability_samples
+            )
+            INSERT INTO transit.reliability_fallback_profiles
+            SELECT 'network', '*', -1, n, d, p, p, CURRENT_TIMESTAMP
+            FROM network WHERE n > 0;
+
+            WITH grouped AS (
+                SELECT route_id, COUNT(*)::integer n,
+                       COUNT(DISTINCT service_date)::integer d,
+                       AVG((representative_delay_seconds BETWEEN %s AND %s)::int)
+                           ::double precision p
+                FROM transit.trip_reliability_samples GROUP BY route_id
+            ), network AS (
+                SELECT reliability_probability p
+                FROM transit.reliability_fallback_profiles
+                WHERE profile_level='network'
+            )
+            INSERT INTO transit.reliability_fallback_profiles
+            SELECT 'route', route_id, -1, n, d, p,
+                   n::double precision/(n+%s)*p
+                   + %s/(n+%s)*network.p, CURRENT_TIMESTAMP
+            FROM grouped CROSS JOIN network;
+
+            WITH grouped AS (
+                SELECT route_id, COALESCE(direction_id, -1) direction_key,
+                       COUNT(*)::integer n,
+                       COUNT(DISTINCT service_date)::integer d,
+                       AVG((representative_delay_seconds BETWEEN %s AND %s)::int)
+                           ::double precision p
+                FROM transit.trip_reliability_samples
+                GROUP BY route_id, COALESCE(direction_id, -1)
+            )
+            INSERT INTO transit.reliability_fallback_profiles
+            SELECT 'route_direction', g.route_id, g.direction_key, g.n, g.d, g.p,
+                   g.n::double precision/(g.n+%s)*g.p
+                   + %s/(g.n+%s)*r.reliability_probability, CURRENT_TIMESTAMP
+            FROM grouped g JOIN transit.reliability_fallback_profiles r
+              ON r.profile_level='route' AND r.route_key=g.route_id;
+        """
+        rebuild_exact = """
+            DELETE FROM transit.route_direction_reliability;
+            WITH grouped AS (
+                SELECT route_id, direction_id, COALESCE(direction_id, -1) direction_key,
+                       time_window, COUNT(*)::integer n,
+                       COUNT(DISTINCT service_date)::integer d,
+                       AVG(representative_delay_seconds)::double precision mean_delay,
+                       AVG(ABS(representative_delay_seconds))::double precision mean_abs,
+                       STDDEV_SAMP(representative_delay_seconds)::double precision stddev,
+                       PERCENTILE_CONT(.5) WITHIN GROUP
+                           (ORDER BY representative_delay_seconds)::double precision p50,
+                       PERCENTILE_CONT(.9) WITHIN GROUP
+                           (ORDER BY ABS(representative_delay_seconds))::double precision p90_abs,
+                       AVG((representative_delay_seconds < %s)::int)::double precision early,
+                       AVG((representative_delay_seconds BETWEEN %s AND %s)::int)::double precision ontime,
+                       AVG((representative_delay_seconds > %s)::int)::double precision late
+                FROM transit.trip_reliability_samples
+                GROUP BY route_id, direction_id, time_window
+            )
+            INSERT INTO transit.route_direction_reliability
+            SELECT g.route_id, g.direction_key, g.direction_id, g.time_window,
+                   g.n, g.d, g.mean_delay, g.mean_abs, g.stddev, g.p50,
+                   g.p90_abs, g.early, g.ontime, g.late,
+                   g.n::double precision/(g.n+%s)*g.ontime
+                     + %s/(g.n+%s)*parent.reliability_probability,
+                   'route_direction', g.n < %s, CURRENT_TIMESTAMP
+            FROM grouped g
+            JOIN transit.reliability_fallback_profiles parent
+              ON parent.profile_level='route_direction'
+             AND parent.route_key=g.route_id
+             AND parent.direction_key=g.direction_key
+        """
         count_latest = """
             SELECT COUNT(*) AS count
             FROM (
@@ -272,90 +328,101 @@ class ReliabilityDatabase:
             ) AS latest
         """
         with self.connection(readonly=False) as connection:
-            connection.execute("DELETE FROM transit.route_reliability")
+            if full_rebuild:
+                connection.execute("DELETE FROM transit.route_direction_reliability")
+                connection.execute("DELETE FROM transit.reliability_fallback_profiles")
+                connection.execute("DELETE FROM transit.trip_reliability_samples")
             observations = connection.execute(count_latest).fetchone()["count"]
-            rows = connection.execute(latest).fetchall()
-        return int(observations), len(rows), sum(row["sample_count"] < 20 for row in rows)
+            connection.execute(sample_upsert)
+            samples = connection.execute(
+                "SELECT COUNT(*) count FROM transit.trip_reliability_samples"
+            ).fetchone()["count"]
+            s = shrinkage_strength
+            fallback_statements = [
+                statement.strip()
+                for statement in rebuild_fallbacks.split(";")
+                if statement.strip()
+            ]
+            connection.execute(fallback_statements[0])
+            connection.execute(
+                fallback_statements[1], (early_threshold, late_threshold)
+            )
+            connection.execute(
+                fallback_statements[2],
+                (early_threshold, late_threshold, s, s, s),
+            )
+            connection.execute(
+                fallback_statements[3],
+                (early_threshold, late_threshold, s, s, s),
+            )
+            connection.execute(
+                rebuild_exact,
+                (early_threshold, early_threshold, late_threshold,
+                 late_threshold, s, s, s, minimum_samples),
+            )
+            rows = connection.execute(
+                "SELECT sample_count FROM transit.route_direction_reliability"
+            ).fetchall()
+        return int(observations), int(samples), len(rows), sum(
+            row["sample_count"] < minimum_samples for row in rows
+        )
 
     def profile(
-        self,
-        route_id: str | None,
-        stop_id: str | None,
-        weekday: int | None,
-        hour: int | None,
+        self, route_id: str, direction_id: int | None, time_window: str
     ) -> ReliabilityProfile | None:
-        # route_reliability is the materialized result of aggregate_profiles().
-        # Reading it avoids rebuilding the DISTINCT-ON observation aggregate
-        # for every label expansion. Broader fallbacks are sample-weighted
-        # aggregates of those exact route/stop/weekday/hour cells.
         query = """
-            SELECT
-                %s::text AS route_id, %s::text AS stop_id,
-                %s::integer AS weekday, %s::integer AS hour_of_day,
-                COALESCE(SUM(sample_count), 0)::integer AS sample_count,
-                (
-                    SUM(mean_delay_seconds * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS mean_delay_seconds,
-                (
-                    SUM(COALESCE(mean_absolute_delay_seconds, 0) * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS mean_absolute_delay_seconds,
-                (
-                    SUM(COALESCE(delay_stddev_seconds, 0) * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS delay_stddev_seconds,
-                (
-                    SUM(p50_delay_seconds * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS p50_delay_seconds,
-                (
-                    SUM(p90_delay_seconds * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS p90_delay_seconds,
-                (
-                    SUM(COALESCE(early_probability, 0) * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS early_probability,
-                (
-                    SUM(on_time_probability * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS on_time_probability,
-                (
-                    SUM(COALESCE(late_probability, 0) * sample_count)
-                    / NULLIF(SUM(sample_count), 0)
-                )::double precision AS late_probability
-            FROM transit.route_reliability
-            WHERE (%s::text IS NULL OR route_id = %s)
-              AND (%s::text IS NULL OR stop_id = %s)
-              AND (%s::integer IS NULL OR weekday = %s)
-              AND (%s::integer IS NULL OR hour_of_day = %s)
+            SELECT route_id, direction_id, time_window, sample_count,
+                   distinct_service_dates, mean_delay_seconds,
+                   mean_absolute_delay_seconds, delay_stddev_seconds,
+                   p50_delay_seconds, p90_absolute_delay_seconds,
+                   early_probability, on_time_probability, late_probability,
+                   reliability_probability
+            FROM transit.route_direction_reliability
+            WHERE route_id=%s AND direction_key=COALESCE(%s, -1)
+              AND time_window=%s
         """
-        params = (
-            route_id, stop_id, weekday, hour,
-            route_id, route_id, stop_id, stop_id,
-            weekday, weekday, hour, hour,
-        )
-        with self.connection() as connection:
-            row = connection.execute(query, params).fetchone()
-        if not row or row["sample_count"] == 0:
+        row = self._profile_session().execute(
+            query, (route_id, direction_id, time_window)
+        ).fetchone()
+        if not row:
             return None
-        return ReliabilityProfile(**row)
-
-    def route_profiles(self, route_id: str) -> list[dict[str, Any]]:
-        query = """
-            SELECT * FROM transit.route_reliability
-            WHERE route_id = %s
-            ORDER BY stop_id, weekday, hour_of_day
-        """
-        return list(
-            self._profile_session().execute(query, (route_id,)).fetchall()
+        return ReliabilityProfile(
+            route_id=row["route_id"],
+            stop_id=None,
+            weekday=None,
+            hour_of_day=None,
+            sample_count=row["sample_count"],
+            mean_delay_seconds=row["mean_delay_seconds"],
+            mean_absolute_delay_seconds=row["mean_absolute_delay_seconds"],
+            delay_stddev_seconds=row["delay_stddev_seconds"],
+            p50_delay_seconds=row["p50_delay_seconds"],
+            p90_delay_seconds=row["p90_absolute_delay_seconds"],
+            early_probability=row["early_probability"],
+            on_time_probability=row["on_time_probability"],
+            late_probability=row["late_probability"],
+            direction_id=row["direction_id"],
+            time_window=row["time_window"],
+            p90_absolute_delay_seconds=row["p90_absolute_delay_seconds"],
+            reliability_probability=row["reliability_probability"],
+            distinct_service_dates=row["distinct_service_dates"],
         )
+
+    def fallback_profile(
+        self, level: str, route_id: str | None, direction_id: int | None
+    ) -> dict[str, Any] | None:
+        query = """
+            SELECT * FROM transit.reliability_fallback_profiles
+            WHERE profile_level=%s AND route_key=%s AND direction_key=%s
+        """
+        return self._profile_session().execute(
+            query,
+            (level, route_id or "*", -1 if direction_id is None else direction_id),
+        ).fetchone()
 
     def count_profiles_below(self, minimum_samples: int) -> int:
         query = """
             SELECT COUNT(*) AS count
-            FROM transit.route_reliability
+            FROM transit.route_direction_reliability
             WHERE sample_count < %s
         """
         with self.connection() as connection:

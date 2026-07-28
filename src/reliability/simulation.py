@@ -37,15 +37,17 @@ def simulate_itinerary(
     rng = random.Random(seed)
     selections = []
     for leg in itinerary.legs:
-        hour = int(leg.arrival_time.total_seconds() // 3600) % 24
-        selections.append(
-            resolver.resolve(
-                leg.route_id,
-                leg.destination.stop_id,
-                itinerary.service_date.weekday(),
-                hour,
+        try:
+            selection = resolver.resolve(
+                leg.route_id, leg.direction_id, leg.arrival_time
             )
-        )
+        except TypeError:
+            hour = int(leg.arrival_time.total_seconds() // 3600) % 24
+            selection = resolver.resolve(
+                leg.route_id, leg.destination.stop_id,
+                itinerary.service_date.weekday(), hour,
+            )
+        selections.append(selection)
     schedule_adherence = (
         mean(
             item.profile.on_time_probability if item.profile is not None else 0.0

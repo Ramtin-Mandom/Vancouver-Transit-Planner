@@ -55,6 +55,7 @@ class CollectionSummary:
 @dataclass(frozen=True)
 class ReliabilityProfile:
     route_id: str | None
+    # Deprecated lookup dimensions retained for constructor compatibility.
     stop_id: str | None
     weekday: int | None
     hour_of_day: int | None
@@ -67,6 +68,21 @@ class ReliabilityProfile:
     early_probability: float
     on_time_probability: float
     late_probability: float
+    direction_id: int | None = None
+    time_window: str | None = None
+    p90_absolute_delay_seconds: float | None = None
+    reliability_probability: float | None = None
+    distinct_service_dates: int = 0
+
+    def __post_init__(self) -> None:
+        if self.p90_absolute_delay_seconds is None:
+            object.__setattr__(
+                self, "p90_absolute_delay_seconds", self.p90_delay_seconds
+            )
+        if self.reliability_probability is None:
+            object.__setattr__(
+                self, "reliability_probability", self.on_time_probability
+            )
 
 
 @dataclass(frozen=True)
@@ -82,6 +98,7 @@ class AggregationSummary:
     profiles_upserted: int
     profiles_below_minimum: int
     elapsed_seconds: float
+    samples_used: int = 0
 
 
 @dataclass(frozen=True)

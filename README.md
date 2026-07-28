@@ -262,18 +262,46 @@ python -m pip install -r requirements.txt
 For an existing populated database, review and apply the non-destructive
 reliability migration:
 
+If PowerShell reports that `psql` is not recognized, PostgreSQL's `bin`
+directory is not on your `PATH`. PostgreSQL 18 is normally installed at
+`C:\Program Files\PostgreSQL\18\bin`. Add it for the current terminal:
+
+```powershell
+$env:Path += ";C:\Program Files\PostgreSQL\18\bin"
+psql --version
+```
+
+To add it permanently for your Windows user, run this as one line, then close
+and reopen PowerShell (or restart the Codex terminal):
+
+```powershell
+$p="C:\Program Files\PostgreSQL\18\bin"; $u=[Environment]::GetEnvironmentVariable("Path","User"); if (($u -split ";") -notcontains $p) {[Environment]::SetEnvironmentVariable("Path",(($u.TrimEnd(";"))+";"+$p),"User")}
+```
+
+If PostgreSQL is installed under a different version number, replace `18` in
+the path. You can also run it without changing `PATH` by using PowerShell's
+call operator:
+
+```powershell
+& "C:\Program Files\PostgreSQL\18\bin\psql.exe" --version
+```
+
+Once `psql --version` succeeds, apply the migrations:
+
 ```powershell
 psql -d vancouver_transit -f database/migrations/001_reliability_data.sql
 psql -d vancouver_transit -f database/migrations/002_delay_classification.sql
+psql -d vancouver_transit -f database/migrations/003_route_direction_window_reliability.sql
 ```
 
 The migration preserves imported GTFS data. It adds `stop_sequence` to existing
 delay observations, corrects snapshot uniqueness, and creates
 `route_reliability`. Review the documented stop-sequence backfill before
 running it, especially if delay observations already exist.
-Migration `002` preserves raw observations and adds the absolute-delay and
-three-way probability columns. Run aggregation after applying it to rebuild
-all derived profiles with the new classification.
+Migration `003` is forward-only and preserves both raw observations and the
+old `route_reliability` table while the replacement is validated. It adds the
+trip sample layer, route/direction/window profiles, and precomputed fallback
+profiles.
 
 ### Collect and aggregate
 
@@ -289,19 +317,38 @@ weeks using an external scheduler. Exact duplicate snapshots are ignored.
 Malformed entities and unknown trip/stop updates are counted without
 discarding valid observations from the same feed.
 
-Build route/stop reliability profiles:
+Incrementally update route/direction/time-window reliability profiles:
 
 ```powershell
-python -m src.reliability.cli aggregate --minimum-samples 20
+python -m src.reliability.cli aggregate
 ```
 
-Aggregation uses only the latest observation for each
-trip/stop/sequence/service-date combination, preventing frequently observed
-trips from receiving extra statistical weight. Delay outcomes use a complete
-three-way classification:
+This command is idempotent and safe while collection continues. For validation
+or recovery, rebuild only derived data from the append-only source:
 
-- earlier than 60 seconds early (`delay < -60`): early and penalized;
-- from 60 seconds early through five minutes late (`-60 <= delay <= 300`):
+```powershell
+python -m src.reliability.cli aggregate --full-rebuild
+```
+
+The independent sample unit is one operated trip, service date, and time
+window. Aggregation first keeps the newest poll for each trip/date/stop/sequence
+and then takes the median delay across those latest stops. Thus repeated
+five-minute polls and trips with many stops do not receive extra weight.
+Profiles use `route_id + direction_id + time_window`; weekday and stop are not
+dimensions. A null GTFS direction is retained as an explicit unknown-direction
+bucket.
+
+Windows are overnight 00:00–05:59, morning peak 06:00–09:59, midday
+10:00–14:59, afternoon peak 15:00–18:59, and evening 19:00–23:59. GTFS
+service-day times beyond 24:00 are reduced modulo 24 only for window lookup;
+their service date is unchanged. The application definition is in
+`src/reliability/classification.py`, with its SQL counterpart installed by
+migration `003`.
+
+Delay outcomes use a complete three-way classification:
+
+- earlier than two minutes early (`delay < -120`): early and penalized;
+- from two minutes early through five minutes late (`-120 <= delay <= 300`):
   on time;
 - more than five minutes late (`delay > 300`): late and penalized.
 
@@ -312,6 +359,13 @@ when service is inconsistent. Profiles therefore also report mean absolute
 delay and separate early, on-time, and late probabilities. Early arrivals are
 penalized because leaving materially ahead of schedule can cause passengers to
 miss a vehicle just as a late connection can.
+
+Routing multiplies each leg's adjusted probability. Exact profiles shrink
+toward precomputed route+direction, route, and network parents using
+`weight = n / (n + 20)`. The raw on-time probability, adjusted probability,
+sample count, fallback level, and insufficient-data flag remain available.
+These short-run profiles do not claim weekday, seasonal, weather, or long-term
+effects.
 
 #### Windows Task Scheduler setup used for data collection
 

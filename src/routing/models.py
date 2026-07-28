@@ -34,6 +34,7 @@ class Connection:
     arrival_time: timedelta
     from_stop_sequence: int
     to_stop_sequence: int
+    direction_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,7 @@ class RouteLeg:
     destination: Stop
     departure_time: timedelta
     arrival_time: timedelta
+    direction_id: int | None = None
 
 
 @dataclass(frozen=True)

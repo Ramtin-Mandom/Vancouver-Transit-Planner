@@ -44,6 +44,7 @@ def _connection(row: dict[str, Any]) -> Connection:
         arrival_time=row["arrival_time"],
         from_stop_sequence=row["from_stop_sequence"],
         to_stop_sequence=row["to_stop_sequence"],
+        direction_id=row.get("direction_id"),
     )
 
 
@@ -130,7 +131,7 @@ class TransitDatabase:
             return []
         query = """
             SELECT
-                t.trip_id, t.service_id, t.route_id,
+                t.trip_id, t.service_id, t.route_id, t.direction_id,
                 r.route_short_name, r.route_long_name,
                 current.stop_id AS from_stop_id,
                 following.stop_id AS to_stop_id,
@@ -189,7 +190,7 @@ class TransitDatabase:
         if service_ids is not None and not service_ids:
             return []
         query = """
-            SELECT t.trip_id, t.service_id, t.route_id,
+            SELECT t.trip_id, t.service_id, t.route_id, t.direction_id,
                    r.route_short_name, r.route_long_name,
                    current.stop_id AS from_stop_id,
                    following.stop_id AS to_stop_id,
@@ -229,7 +230,7 @@ class TransitDatabase:
         """Return only consecutive hops at/after a position on one trip."""
         query = """
             SELECT
-                t.trip_id, t.service_id, t.route_id,
+                t.trip_id, t.service_id, t.route_id, t.direction_id,
                 r.route_short_name, r.route_long_name,
                 current.stop_id AS from_stop_id,
                 following.stop_id AS to_stop_id,

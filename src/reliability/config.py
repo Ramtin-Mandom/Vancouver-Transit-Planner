@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 from src.data_ingestion.config import PROJECT_ROOT, ConfigurationError
+from .classification import (
+    EARLY_THRESHOLD_SECONDS,
+    LATE_THRESHOLD_SECONDS,
+    SHRINKAGE_STRENGTH,
+)
 
 DEFAULT_FEED_URL = (
     "https://gtfsapi.translink.ca/v3/gtfsrealtime?apikey={api_key}"
@@ -22,6 +27,9 @@ class ReliabilityConfig:
     minimum_samples: int = 20
     simulations: int = 1000
     random_seed: int = 42
+    early_threshold_seconds: int = EARLY_THRESHOLD_SECONDS
+    late_threshold_seconds: int = LATE_THRESHOLD_SECONDS
+    shrinkage_strength: float = SHRINKAGE_STRENGTH
 
     @classmethod
     def from_environment(cls) -> "ReliabilityConfig":
@@ -39,15 +47,23 @@ class ReliabilityConfig:
         try:
             timeout = float(os.getenv("GTFS_RT_TIMEOUT_SECONDS", "20"))
             minimum = int(os.getenv("RELIABILITY_MINIMUM_SAMPLES", "20"))
+            early = int(os.getenv("RELIABILITY_EARLY_SECONDS", "-120"))
+            late = int(os.getenv("RELIABILITY_LATE_SECONDS", "300"))
+            shrinkage = float(os.getenv("RELIABILITY_SHRINKAGE_STRENGTH", "20"))
         except ValueError as exc:
             raise ConfigurationError(
                 "reliability timeout and minimum samples must be numeric"
             ) from exc
-        if timeout <= 0 or minimum < 1:
+        if timeout <= 0 or minimum < 1 or shrinkage < 0 or early >= late:
             raise ConfigurationError(
                 "reliability timeout and minimum samples must be positive"
             )
-        return cls(api_key, template, timeout, minimum)
+        return cls(
+            api_key, template, timeout, minimum,
+            early_threshold_seconds=early,
+            late_threshold_seconds=late,
+            shrinkage_strength=shrinkage,
+        )
 
     @property
     def feed_url(self) -> str:

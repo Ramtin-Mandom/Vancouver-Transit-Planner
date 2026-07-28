@@ -445,6 +445,7 @@ class TransitPlanner:
                     destination=leg_destination,
                     departure_time=first.departure_time,
                     arrival_time=last.arrival_time,
+                    direction_id=first.direction_id,
                 )
             )
         return Itinerary(

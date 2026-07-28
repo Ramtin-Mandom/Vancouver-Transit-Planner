@@ -1,6 +1,7 @@
 """Bounded time-dependent Pareto search for reliability-aware alternatives.
 
-Each boarding contributes the selected profile's ``on_time_probability``.
+Each boarding contributes the selected profile's sample-adjusted
+``reliability_probability``.
 Leg probabilities are assumed independent and are multiplied (implemented as
 the sum of negative logarithms). Transfer success is deliberately not added:
 the same delay observations feed the leg profiles, so doing both here would
@@ -162,10 +163,22 @@ class ParetoTransitSearch:
 
         def profile(connection: Connection, alight_stop: str):
             check_deadline()
-            hour = int(connection.arrival_time.total_seconds() // 3600) % 24
-            key = (connection.route_id, alight_stop, service_date.weekday(), hour)
+            key = (
+                connection.route_id,
+                connection.direction_id,
+                connection.arrival_time,
+            )
             if key not in profile_cache:
-                profile_cache[key] = self.resolver.resolve(*key)
+                try:
+                    profile_cache[key] = self.resolver.resolve(*key)
+                except TypeError:
+                    # Compatibility for external resolvers using the deprecated
+                    # stop/weekday/hour interface.
+                    hour = int(connection.arrival_time.total_seconds() // 3600) % 24
+                    profile_cache[key] = self.resolver.resolve(
+                        connection.route_id, alight_stop,
+                        service_date.weekday(), hour,
+                    )
                 check_deadline()
             return profile_cache[key]
 
@@ -293,7 +306,7 @@ class ParetoTransitSearch:
                         break
                     selection = profile(connection, current)
                     probability = (
-                        selection.profile.on_time_probability
+                        selection.profile.reliability_probability
                         if selection.profile is not None else 0.0
                     )
                     add(_Label(
@@ -383,6 +396,7 @@ class ParetoTransitSearch:
             legs.append(RouteLeg(
                 first.trip_id, first.route_id, first.route_name,
                 leg_origin, leg_destination, first.departure_time, last.arrival_time,
+                first.direction_id,
             ))
         return Itinerary(
             origin, destination, service_date, departure, label.arrival, tuple(legs)
