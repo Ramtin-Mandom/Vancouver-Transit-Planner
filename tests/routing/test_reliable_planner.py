@@ -126,6 +126,27 @@ def test_profile_lookups_are_request_cached():
     assert resolver.calls.count(("R", "D")) == 1
 
 
+def test_get_ranked_routes_limits_without_extra_profile_lookups():
+    trips = {
+        f"T{number}": [
+            connection(
+                f"T{number}", "weekday", f"R{number}", "A", "D",
+                at(8, number), at(8, 10 + number),
+            )
+        ]
+        for number in range(4)
+    }
+    resolver = Resolver({
+        (f"R{number}", "D"): .6 + number * .1 for number in range(4)
+    })
+    planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips))
+    routes = planner.get_ranked_routes(
+        "A", "D", MONDAY, at(7, 59), resolver, route_number=3
+    )
+    assert len(routes) == 3
+    assert len(resolver.calls) == 4
+
+
 def test_returns_five_structurally_distinct_deterministic_alternatives():
     trips = {
         f"T{number}": [

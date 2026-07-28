@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import heapq
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import count
 from time import perf_counter
@@ -26,6 +26,7 @@ from .models import (
     SearchTiming,
     Stop,
 )
+from .route_results import itinerary_identity
 
 EPSILON = 1e-9
 DEFAULT_MAX_TRANSFERS = 3
@@ -65,13 +66,6 @@ def _dominates(left: _Label, right: _Label) -> bool:
     )
 
 
-def _identity(itinerary: Itinerary) -> tuple[tuple[str, str, str], ...]:
-    return tuple(
-        (leg.trip_id, leg.origin.stop_id, leg.destination.stop_id)
-        for leg in itinerary.legs
-    )
-
-
 class ParetoTransitSearch:
     def __init__(self, database: Any, calendar: Any, resolver: Any) -> None:
         self.database = database
@@ -85,13 +79,15 @@ class ParetoTransitSearch:
         service_date: date,
         departure_time: timedelta,
         *,
-        limit: int = 5,
+        limit: int | None = None,
         max_transfers: int = DEFAULT_MAX_TRANSFERS,
         max_extra_minutes: int = 30,
         search_horizon_minutes: int = DEFAULT_SEARCH_HORIZON_MINUTES,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     ) -> ReliableSearchResult:
-        if limit < 1 or max_transfers < 0 or max_extra_minutes < 0:
+        if limit is not None and limit < 1:
+            raise ValueError("candidate limit must be positive")
+        if max_transfers < 0 or max_extra_minutes < 0:
             raise ValueError("invalid reliable-search bounds")
         if search_horizon_minutes < 1:
             raise ValueError("search horizon must be positive")
@@ -344,7 +340,7 @@ class ParetoTransitSearch:
             itinerary = self._reconstruct(
                 origin, destination, service_date, departure_time, label
             )
-            identifier = _identity(itinerary)
+            identifier = itinerary_identity(itinerary)
             if not identifier or identifier in seen:
                 continue
             seen.add(identifier)
@@ -354,48 +350,10 @@ class ParetoTransitSearch:
                 label.reliability_cost,
                 label.selections,
             ))
-        if alternatives:
-            fastest_seconds = min(
-                item.itinerary.total_scheduled_travel_time.total_seconds()
-                for item in alternatives
-            )
-            alternatives = [
-                replace(
-                    item,
-                    speed_component=min(
-                        1.0,
-                        fastest_seconds
-                        / max(
-                            1.0,
-                            item.itinerary.total_scheduled_travel_time.total_seconds(),
-                        ),
-                    ),
-                    combined_score=100.0 * (
-                        0.8 * item.route_reliability
-                        + 0.2 * min(
-                            1.0,
-                            fastest_seconds
-                            / max(
-                                1.0,
-                                item.itinerary.total_scheduled_travel_time.total_seconds(),
-                            ),
-                        )
-                    ),
-                )
-                for item in alternatives
-            ]
-            alternatives.sort(
-                key=lambda item: (
-                    -item.combined_score,
-                    -item.route_reliability,
-                    item.itinerary.arrival_time,
-                    item.itinerary.transfer_count,
-                    _identity(item.itinerary),
-                )
-            )
         ranked_at = perf_counter()
+        returned = alternatives if limit is None else alternatives[:limit]
         return ReliableSearchResult(
-            tuple(alternatives[:limit]),
+            tuple(returned),
             SearchTiming(
                 (loaded_at - started) * 1000,
                 (searched_at - loaded_at) * 1000,

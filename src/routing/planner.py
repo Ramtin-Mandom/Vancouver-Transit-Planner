@@ -6,10 +6,20 @@ import heapq
 from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import count
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from .models import Connection, Itinerary, RouteLeg, Stop
+from .models import (
+    Connection,
+    Itinerary,
+    ReliableAlternative,
+    ReliableSearchResult,
+    RouteLeg,
+    Stop,
+)
 from .service_calendar import ServiceCalendar
+
+if TYPE_CHECKING:
+    from .route_results import RoutingPreferences
 
 
 class RoutingRepository(Protocol):
@@ -181,17 +191,76 @@ class TransitPlanner:
         departure_time: timedelta,
         resolver: Any,
         **bounds: Any,
-    ):
-        """Run the bounded multi-label search used by reliable routing."""
-        from .reliable import ParetoTransitSearch
-
-        return ParetoTransitSearch(
-            self.database, self.calendar, resolver
-        ).search(
+    ) -> ReliableSearchResult:
+        """Compatibility API returning ranked alternatives plus diagnostics."""
+        route_number = bounds.pop("route_number", None)
+        if route_number is None:
+            route_number = bounds.pop("limit", 5)
+        preferences = bounds.pop("preferences", None)
+        return self.get_ranked_route_result(
             origin_stop_id,
             destination_stop_id,
             service_date,
             departure_time,
+            resolver,
+            route_number=route_number,
+            preferences=preferences,
+            **bounds,
+        )
+
+    def get_ranked_routes(
+        self,
+        origin_stop_id: str,
+        destination_stop_id: str,
+        service_date: date,
+        departure_time: timedelta,
+        resolver: Any,
+        *,
+        route_number: int = 5,
+        preferences: "RoutingPreferences | None" = None,
+        **bounds: Any,
+    ) -> list[ReliableAlternative]:
+        """Return up to ``route_number`` reliable routes, best first."""
+        return list(
+            self.get_ranked_route_result(
+                origin_stop_id,
+                destination_stop_id,
+                service_date,
+                departure_time,
+                resolver,
+                route_number=route_number,
+                preferences=preferences,
+                **bounds,
+            ).alternatives
+        )
+
+    def get_ranked_route_result(
+        self,
+        origin_stop_id: str,
+        destination_stop_id: str,
+        service_date: date,
+        departure_time: timedelta,
+        resolver: Any,
+        *,
+        route_number: int = 5,
+        preferences: "RoutingPreferences | None" = None,
+        **bounds: Any,
+    ) -> ReliableSearchResult:
+        """Return ranked routes with search timing and diagnostics."""
+        from .reliable import ParetoTransitSearch
+        from .route_results import get_ranked_route_result
+
+        search = ParetoTransitSearch(
+            self.database, self.calendar, resolver
+        )
+        return get_ranked_route_result(
+            search,
+            origin_stop_id,
+            destination_stop_id,
+            service_date,
+            departure_time,
+            route_number=route_number,
+            preferences=preferences,
             **bounds,
         )
 
