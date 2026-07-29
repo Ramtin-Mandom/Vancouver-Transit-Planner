@@ -1,0 +1,245 @@
+import { useState, type FormEvent } from "react";
+import {
+  ArrowDownUp,
+  ChevronDown,
+  LoaderCircle,
+  Search
+} from "lucide-react";
+import type { RoutePlanRequest, Stop } from "../api/types";
+import { PriorityControls } from "./PriorityControls";
+import { StopAutocomplete } from "./StopAutocomplete";
+
+export interface PlannerValues {
+  origin: Stop | null;
+  destination: Stop | null;
+  serviceDate: string;
+  departureTime: string;
+  routeNumber: number;
+  reliability: number;
+  transferEffect: number;
+  minimumSamples: number;
+  maxExtraMinutes: number;
+  searchTimeoutSeconds: number;
+}
+
+interface Props {
+  loading: boolean;
+  onSubmit: (request: RoutePlanRequest) => void;
+}
+
+type Errors = Partial<Record<"origin" | "destination" | "date" | "time", string>>;
+
+function localDate(): string {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+export const DEFAULT_PLANNER_VALUES: PlannerValues = {
+  origin: null,
+  destination: null,
+  serviceDate: localDate(),
+  departureTime: "08:00:00",
+  routeNumber: 5,
+  reliability: 50,
+  transferEffect: 0,
+  minimumSamples: 20,
+  maxExtraMinutes: 30,
+  searchTimeoutSeconds: 30
+};
+
+export function TripPlannerForm({ loading, onSubmit }: Props) {
+  const [values, setValues] = useState(DEFAULT_PLANNER_VALUES);
+  const [errors, setErrors] = useState<Errors>({});
+
+  const update = <K extends keyof PlannerValues>(key: K, value: PlannerValues[K]) => {
+    setValues((current) => ({ ...current, [key]: value }));
+    setErrors((current) => ({ ...current, [key]: undefined }));
+  };
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    const nextErrors: Errors = {};
+    if (!values.origin) nextErrors.origin = "Select an origin from the suggestions.";
+    if (!values.destination) {
+      nextErrors.destination = "Select a destination from the suggestions.";
+    }
+    if (
+      values.origin &&
+      values.destination &&
+      values.origin.stop_id === values.destination.stop_id
+    ) {
+      nextErrors.destination = "Origin and destination must be different.";
+    }
+    if (!values.serviceDate) nextErrors.date = "Choose a service date.";
+    if (!/^\d+:[0-5]\d:[0-5]\d$/.test(values.departureTime)) {
+      nextErrors.time = "Use GTFS time in HH:MM:SS format.";
+    }
+    setErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0 || !values.origin || !values.destination) {
+      return;
+    }
+    onSubmit({
+      origin_stop_id: values.origin.stop_id,
+      destination_stop_id: values.destination.stop_id,
+      service_date: values.serviceDate,
+      departure_time: values.departureTime,
+      route_number: values.routeNumber,
+      minimum_samples: values.minimumSamples,
+      max_extra_minutes: values.maxExtraMinutes,
+      search_timeout_seconds: values.searchTimeoutSeconds,
+      reliability_effect: values.reliability / 100,
+      travel_time_effect: (100 - values.reliability) / 100,
+      transfer_effect: values.transferEffect / 100
+    });
+  };
+
+  const swap = () => {
+    setValues((current) => ({
+      ...current,
+      origin: current.destination,
+      destination: current.origin
+    }));
+    setErrors({});
+  };
+
+  return (
+    <form className="plannerPanel" id="planner" onSubmit={submit} noValidate>
+      <div className="panelTitle">
+        <div>
+          <p className="eyebrow">Plan a trip</p>
+          <h2>Where are you headed?</h2>
+        </div>
+        <span className="engineBadge">Historical reliability included</span>
+      </div>
+
+      <div className="stopFields">
+        <StopAutocomplete
+          id="origin-stop"
+          label="Origin"
+          placeholder="Search by stop name"
+          value={values.origin}
+          onChange={(stop) => update("origin", stop)}
+          error={errors.origin}
+        />
+        <button
+          type="button"
+          className="swapButton"
+          aria-label="Swap origin and destination"
+          onClick={swap}
+        >
+          <ArrowDownUp size={19} />
+        </button>
+        <StopAutocomplete
+          id="destination-stop"
+          label="Destination"
+          placeholder="Search by stop name"
+          value={values.destination}
+          onChange={(stop) => update("destination", stop)}
+          error={errors.destination}
+        />
+      </div>
+
+      <div className="tripFields">
+        <div className="fieldGroup">
+          <label htmlFor="service-date">Service date</label>
+          <input
+            id="service-date"
+            type="date"
+            value={values.serviceDate}
+            aria-invalid={Boolean(errors.date)}
+            onChange={(event) => update("serviceDate", event.target.value)}
+          />
+          {errors.date && <small className="fieldError">{errors.date}</small>}
+        </div>
+        <div className="fieldGroup">
+          <label htmlFor="departure-time">Departure time</label>
+          <input
+            id="departure-time"
+            inputMode="numeric"
+            value={values.departureTime}
+            aria-invalid={Boolean(errors.time)}
+            onChange={(event) => update("departureTime", event.target.value)}
+          />
+          {errors.time && <small className="fieldError">{errors.time}</small>}
+        </div>
+        <div className="fieldGroup">
+          <label htmlFor="route-number">Alternatives</label>
+          <select
+            id="route-number"
+            value={values.routeNumber}
+            onChange={(event) => update("routeNumber", Number(event.target.value))}
+          >
+            {[1, 2, 3, 4, 5].map((count) => (
+              <option value={count} key={count}>{count} route{count > 1 ? "s" : ""}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <PriorityControls
+        reliability={values.reliability}
+        onChange={(value) => update("reliability", value)}
+      />
+
+      <details className="advancedOptions">
+        <summary><ChevronDown size={17} /> Advanced options</summary>
+        <div className="advancedGrid">
+          <div className="fieldGroup">
+            <label htmlFor="transfer-effect">Transfer priority (%)</label>
+            <input
+              id="transfer-effect"
+              type="number"
+              min="0"
+              max="100"
+              value={values.transferEffect}
+              onChange={(event) => update("transferEffect", Number(event.target.value))}
+            />
+            <small>Optionally prefer journeys with fewer transfers.</small>
+          </div>
+          <div className="fieldGroup">
+            <label htmlFor="minimum-samples">Minimum samples</label>
+            <input
+              id="minimum-samples"
+              type="number"
+              min="1"
+              value={values.minimumSamples}
+              onChange={(event) => update("minimumSamples", Math.max(1, Number(event.target.value)))}
+            />
+            <small>Threshold for marking reliability data as sufficient.</small>
+          </div>
+          <div className="fieldGroup">
+            <label htmlFor="extra-minutes">Maximum extra minutes</label>
+            <input
+              id="extra-minutes"
+              type="number"
+              min="0"
+              max="120"
+              value={values.maxExtraMinutes}
+              onChange={(event) => update("maxExtraMinutes", Number(event.target.value))}
+            />
+            <small>How much slower an alternative may be.</small>
+          </div>
+          <div className="fieldGroup">
+            <label htmlFor="search-timeout">Search timeout (seconds)</label>
+            <input
+              id="search-timeout"
+              type="number"
+              min="1"
+              max="120"
+              step="1"
+              value={values.searchTimeoutSeconds}
+              onChange={(event) => update("searchTimeoutSeconds", Number(event.target.value))}
+            />
+            <small>Stops unusually expensive searches after 1–120 seconds.</small>
+          </div>
+        </div>
+      </details>
+
+      <button className="primaryButton" type="submit" disabled={loading}>
+        {loading ? <LoaderCircle className="spin" size={19} /> : <Search size={19} />}
+        {loading ? "Comparing routes…" : "Find routes"}
+      </button>
+    </form>
+  );
+}

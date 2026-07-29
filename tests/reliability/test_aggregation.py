@@ -14,8 +14,8 @@ def test_mixed_early_and_late_delays_do_not_cancel():
     result = summarize_delays([-600, -120, 0, 240, 600])
     assert result["mean_delay_seconds"] == 24
     assert result["mean_absolute_delay_seconds"] == 312
-    assert result["early_probability"] == 0.4
-    assert result["on_time_probability"] == 0.4
+    assert result["early_probability"] == 0.2
+    assert result["on_time_probability"] == 0.6
     assert result["late_probability"] == 0.2
     assert (
         result["early_probability"]
@@ -25,7 +25,7 @@ def test_mixed_early_and_late_delays_do_not_cancel():
 
 
 def test_classification_boundaries_are_complete():
-    result = summarize_delays([-61, -60, 300, 301])
+    result = summarize_delays([-121, -120, 300, 301])
     assert result["early_probability"] == 0.25
     assert result["on_time_probability"] == 0.5
     assert result["late_probability"] == 0.25

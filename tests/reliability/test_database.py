@@ -26,13 +26,32 @@ def test_aggregation_selects_latest_observation_only():
     assert "observed_at DESC" in source
 
 
+def test_route_fallback_aggregation_qualifies_probability_columns():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "src" / "reliability" / "database.py").read_text(
+        encoding="utf-8"
+    )
+    assert "(g.n+%s)*g.p" in source
+    assert "(g.n+%s)*network.p" in source
+
+
+def test_exact_profile_rebuild_executes_one_statement_at_a_time():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "src" / "reliability" / "database.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'for statement in rebuild_exact.split(";")' in source
+    assert "connection.execute(exact_statements[0])" in source
+    assert "exact_statements[1]," in source
+
+
 def test_profile_lookup_reads_materialized_profiles():
     root = Path(__file__).resolve().parents[2]
     source = (root / "src" / "reliability" / "database.py").read_text(
         encoding="utf-8"
     )
     profile_source = source[source.index("    def profile("):]
-    assert "FROM transit.route_reliability" in profile_source
+    assert "FROM transit.route_direction_reliability" in profile_source
     assert "FROM latest" not in profile_source.split(
         "    def route_profiles", 1
     )[0]
