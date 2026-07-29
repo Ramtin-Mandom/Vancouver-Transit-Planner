@@ -159,6 +159,77 @@ environment. If a traceback mentions an unsupported global installation such
 as `Python38`, recreate and activate `.venv` with Python 3.10 or newer using the
 commands above.
 
+## HTTP API
+
+The FastAPI service reads the existing PostgreSQL GTFS and precomputed
+reliability profile data. It does not call the live TransLink API while
+planning routes and does not create a new database schema.
+
+Install all application and testing dependencies from the repository root:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+Configure the same required database variables used by the CLI in `.env`:
+
+```dotenv
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=vancouver_transit
+DB_USER=your_database_user
+DB_PASSWORD=your_database_password
+```
+
+Start the development server from the repository root:
+
+```powershell
+python -m uvicorn src.api.main:app --reload
+```
+
+Interactive Swagger documentation is available at
+http://127.0.0.1:8000/docs.
+
+Search for stops:
+
+```text
+GET http://127.0.0.1:8000/stops/search?query=Granville&limit=10
+```
+
+Plan reliability-ranked routes:
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:8000/routes/plan `
+  -ContentType "application/json" `
+  -Body '{
+    "origin_stop_id": "646",
+    "destination_stop_id": "31",
+    "service_date": "2026-07-27",
+    "departure_time": "08:00:00",
+    "route_number": 5,
+    "minimum_samples": 20,
+    "max_extra_minutes": 30,
+    "search_timeout_seconds": 30.0,
+    "reliability_effect": 0.5,
+    "travel_time_effect": 0.5,
+    "transfer_effect": 0.0
+  }'
+```
+
+GTFS departure times beyond midnight, such as `25:10:00`, are supported.
+Local frontend CORS defaults to explicit `localhost` and `127.0.0.1` origins
+on ports 3000 and 5173. Override them with a comma-separated
+`API_CORS_ORIGINS` environment variable.
+
+API tests use deterministic fakes and require no PostgreSQL connection, API
+key, or internet access:
+
+```powershell
+python -m pytest tests/api
+```
+
 ### Real GTFS integration tests
 
 Real-data tests are marked `integration` and are excluded from the default test

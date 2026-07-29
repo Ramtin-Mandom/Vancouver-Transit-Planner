@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 
 from src.reliability.models import ReliabilityProfile
@@ -7,9 +9,9 @@ from src.reliability.profiles import FALLBACKS, ProfileResolver
 def profile(samples=20):
     return ReliabilityProfile(
         route_id="R",
-        stop_id="S",
-        weekday=0,
-        hour_of_day=8,
+        stop_id=None,
+        weekday=None,
+        hour_of_day=None,
         sample_count=samples,
         mean_delay_seconds=60,
         mean_absolute_delay_seconds=90,
@@ -19,22 +21,36 @@ def profile(samples=20):
         early_probability=0.1,
         on_time_probability=0.8,
         late_probability=0.1,
+        direction_id=0,
+        time_window="morning_peak",
+        reliability_probability=0.8,
+        distinct_service_dates=10,
     )
 
 
-@pytest.mark.parametrize("selected_index", range(len(FALLBACKS)))
-def test_every_profile_fallback_level(selected_index):
+def fallback_row():
+    return {
+        "sample_count": 20,
+        "distinct_service_dates": 10,
+        "on_time_probability": 0.8,
+        "reliability_probability": 0.8,
+    }
+
+
+@pytest.mark.parametrize("selected_level", FALLBACKS)
+def test_every_profile_fallback_level(selected_level):
     class Database:
-        def __init__(self):
-            self.calls = 0
-
         def profile(self, *args):
-            current = self.calls
-            self.calls += 1
-            return profile() if current == selected_index else None
+            return profile() if selected_level == "route_direction_window" else None
 
-    selection = ProfileResolver(Database()).resolve("R", "S", 0, 8)
-    assert selection.fallback_level == FALLBACKS[selected_index][0]
+        def fallback_profile(self, level, *args):
+            return fallback_row() if level == selected_level else None
+
+    selection = ProfileResolver(Database()).resolve(
+        "R", 0, timedelta(hours=8)
+    )
+    assert selection.fallback_level == selected_level
+    assert selection.profile is not None
 
 
 def test_minimum_samples_and_insufficient_data():
@@ -43,7 +59,8 @@ def test_minimum_samples_and_insufficient_data():
             return profile(samples=19)
 
     selection = ProfileResolver(Database(), minimum_samples=20).resolve(
-        "R", "S", 0, 8
+        "R", 0, timedelta(hours=8)
     )
     assert selection.insufficient_data
-    assert selection.profile is None
+    assert selection.profile is not None
+    assert selection.profile.sample_count == 19

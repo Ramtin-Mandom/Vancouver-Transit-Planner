@@ -263,10 +263,10 @@ class ReliabilityDatabase:
                 WHERE profile_level='network'
             )
             INSERT INTO transit.reliability_fallback_profiles
-            SELECT 'route', route_id, -1, n, d, p,
-                   n::double precision/(n+%s)*p
-                   + %s/(n+%s)*network.p, CURRENT_TIMESTAMP
-            FROM grouped CROSS JOIN network;
+            SELECT 'route', g.route_id, -1, g.n, g.d, g.p,
+                   g.n::double precision/(g.n+%s)*g.p
+                   + %s/(g.n+%s)*network.p, CURRENT_TIMESTAMP
+            FROM grouped g CROSS JOIN network;
 
             WITH grouped AS (
                 SELECT route_id, COALESCE(direction_id, -1) direction_key,
@@ -355,8 +355,14 @@ class ReliabilityDatabase:
                 fallback_statements[3],
                 (early_threshold, late_threshold, s, s, s),
             )
+            exact_statements = [
+                statement.strip()
+                for statement in rebuild_exact.split(";")
+                if statement.strip()
+            ]
+            connection.execute(exact_statements[0])
             connection.execute(
-                rebuild_exact,
+                exact_statements[1],
                 (early_threshold, early_threshold, late_threshold,
                  late_threshold, s, s, s, minimum_samples),
             )
