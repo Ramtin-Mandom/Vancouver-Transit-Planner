@@ -230,45 +230,6 @@ key, or internet access:
 python -m pytest tests/api
 ```
 
-### Portfolio frontend
-
-The React and TypeScript interface in `frontend/` demonstrates how the routing
-engine balances scheduled travel time with historical reliability. It includes
-stop autocomplete, configurable priorities, reliability-ranked route cards,
-multi-leg itineraries, performance details, and an OpenStreetMap stop view.
-
-Start FastAPI from the repository root:
-
-```powershell
-python -m uvicorn src.api.main:app --reload
-```
-
-Then start the frontend in another terminal:
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Open http://127.0.0.1:5173. The client reads its API origin from
-`VITE_API_BASE_URL` and defaults to `http://127.0.0.1:8000`. Copy
-`frontend/.env.example` to `frontend/.env` to override it. The existing
-FastAPI CORS defaults permit `localhost` and `127.0.0.1` frontend origins on
-ports 3000 and 5173; use the comma-separated backend `API_CORS_ORIGINS`
-setting for other local origins.
-
-Run deterministic frontend tests and create a production build:
-
-```powershell
-cd frontend
-npm run test
-npm run build
-```
-
-The API provides stop coordinates but not full route shapes, so the map shows
-stop locations without drawing misleading route geometry.
-
 ### Real GTFS integration tests
 
 Real-data tests are marked `integration` and are excluded from the default test
