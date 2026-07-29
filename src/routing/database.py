@@ -105,10 +105,16 @@ class TransitDatabase:
 
     def search_stops(self, stop_name: str, limit: int = 20) -> list[Stop]:
         query = """
-            SELECT stop_id, stop_name, stop_code, stop_lat, stop_lon
-            FROM transit.stops
-            WHERE stop_name ILIKE %s
-            ORDER BY stop_name, stop_id
+            SELECT stop.stop_id, stop.stop_name, stop.stop_code,
+                   stop.stop_lat, stop.stop_lon
+            FROM transit.stops AS stop
+            WHERE stop.stop_name ILIKE %s
+              AND EXISTS (
+                  SELECT 1
+                  FROM transit.stop_times AS stop_time
+                  WHERE stop_time.stop_id = stop.stop_id
+              )
+            ORDER BY stop.stop_name, stop.stop_id
             LIMIT %s
         """
         with self._connection() as connection:
