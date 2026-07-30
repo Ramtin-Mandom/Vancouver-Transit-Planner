@@ -7,6 +7,8 @@ from datetime import date, timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from src.reliability.policy import DEFAULT_MINIMUM_SAMPLES
+
 from src.routing.cli import parse_gtfs_time
 from src.routing.route_results import RoutingPreferences
 
@@ -72,7 +74,7 @@ class RoutePlanRequest(ApiModel):
     service_date: date
     departure_time: str
     route_number: int = Field(default=5, ge=1, le=5)
-    minimum_samples: int = Field(default=20, ge=1)
+    minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)
     search_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
     reliability_effect: float = Field(default=0.5, ge=0)

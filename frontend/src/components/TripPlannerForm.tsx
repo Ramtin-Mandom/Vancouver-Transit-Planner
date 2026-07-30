@@ -43,7 +43,7 @@ export const DEFAULT_PLANNER_VALUES: PlannerValues = {
   routeNumber: 5,
   reliability: 50,
   transferEffect: 0,
-  minimumSamples: 20,
+  minimumSamples: 10,
   maxExtraMinutes: 30,
   searchTimeoutSeconds: 30
 };

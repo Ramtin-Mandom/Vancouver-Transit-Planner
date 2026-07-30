@@ -13,6 +13,7 @@ from .classification import (
     LATE_THRESHOLD_SECONDS,
     SHRINKAGE_STRENGTH,
 )
+from .policy import DEFAULT_MINIMUM_SAMPLES
 
 DEFAULT_FEED_URL = (
     "https://gtfsapi.translink.ca/v3/gtfsrealtime?apikey={api_key}"
@@ -24,7 +25,7 @@ class ReliabilityConfig:
     api_key: str
     feed_url_template: str = DEFAULT_FEED_URL
     request_timeout_seconds: float = 20.0
-    minimum_samples: int = 20
+    minimum_samples: int = DEFAULT_MINIMUM_SAMPLES
     simulations: int = 1000
     random_seed: int = 42
     early_threshold_seconds: int = EARLY_THRESHOLD_SECONDS
@@ -46,7 +47,10 @@ class ReliabilityConfig:
             )
         try:
             timeout = float(os.getenv("GTFS_RT_TIMEOUT_SECONDS", "20"))
-            minimum = int(os.getenv("RELIABILITY_MINIMUM_SAMPLES", "20"))
+            minimum = int(os.getenv(
+                "RELIABILITY_MINIMUM_SAMPLES",
+                str(DEFAULT_MINIMUM_SAMPLES),
+            ))
             early = int(os.getenv("RELIABILITY_EARLY_SECONDS", "-120"))
             late = int(os.getenv("RELIABILITY_LATE_SECONDS", "300"))
             shrinkage = float(os.getenv("RELIABILITY_SHRINKAGE_STRENGTH", "20"))

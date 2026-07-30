@@ -19,6 +19,7 @@ from .collector import collect_snapshot
 from .config import ReliabilityConfig
 from .database import ReliabilityDatabase
 from .profiles import ProfileResolver
+from .policy import DEFAULT_MINIMUM_SAMPLES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,7 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("collect", help="collect one GTFS-Realtime snapshot")
     aggregate = subparsers.add_parser("aggregate", help="update route profiles")
-    aggregate.add_argument("--minimum-samples", type=int, default=20)
+    aggregate.add_argument(
+        "--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES
+    )
     aggregate.add_argument(
         "--full-rebuild", action="store_true",
         help="recreate all derived samples and profiles from append-only raw data",
@@ -37,7 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--time-window", required=True, choices=(
         "overnight", "morning_peak", "midday", "afternoon_peak", "evening",
     ))
-    report.add_argument("--minimum-samples", type=int, default=20)
+    report.add_argument(
+        "--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES
+    )
     return parser
 
 

@@ -6,12 +6,17 @@ from datetime import timedelta
 
 from .classification import time_window
 from .models import ProfileSelection, ReliabilityProfile
+from .policy import DEFAULT_MINIMUM_SAMPLES
 
 FALLBACKS = ("route_direction_window", "route_direction", "route", "network")
 
 
 class ProfileResolver:
-    def __init__(self, database, minimum_samples: int = 20) -> None:
+    def __init__(
+        self,
+        database,
+        minimum_samples: int = DEFAULT_MINIMUM_SAMPLES,
+    ) -> None:
         self.database = database
         self.minimum_samples = minimum_samples
         self._cache = {}

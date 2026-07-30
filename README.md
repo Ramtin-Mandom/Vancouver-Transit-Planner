@@ -209,7 +209,7 @@ Invoke-RestMethod `
     "service_date": "2026-07-27",
     "departure_time": "08:00:00",
     "route_number": 5,
-    "minimum_samples": 20,
+    "minimum_samples": 10,
     "max_extra_minutes": 30,
     "search_timeout_seconds": 30.0,
     "reliability_effect": 0.5,
@@ -467,7 +467,7 @@ For the five-minute collection task, use:
 Create a daily aggregation task with:
 
 ```text
--m src.reliability.cli aggregate --minimum-samples 20
+-m src.reliability.cli aggregate --minimum-samples 10
 ```
 
 Set the collection task to avoid starting a second instance when the previous
@@ -520,7 +520,7 @@ python -m src.routing.cli `
   --reliable `
   --alternatives 5 `
   --max-extra-minutes 30 `
-  --minimum-samples 20 `
+  --minimum-samples 10 `
   --search-timeout-seconds 30 `
   --reliability-effect 0.5 `
   --travel-time-effect 0.5

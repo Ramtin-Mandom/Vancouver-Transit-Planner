@@ -7,6 +7,7 @@ from math import sqrt
 
 from .models import AggregationSummary
 from .classification import classify_delay
+from .policy import DEFAULT_MINIMUM_SAMPLES
 
 
 def summarize_delays(delays: list[int]) -> dict[str, float]:
@@ -54,7 +55,7 @@ def summarize_delays(delays: list[int]) -> dict[str, float]:
 
 def rebuild_profiles(
     database,
-    minimum_samples: int = 20,
+    minimum_samples: int = DEFAULT_MINIMUM_SAMPLES,
     *,
     full_rebuild: bool = False,
     early_threshold: int = -120,

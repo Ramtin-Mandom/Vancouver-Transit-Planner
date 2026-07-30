@@ -7,6 +7,7 @@ import sys
 from datetime import date, timedelta
 
 from src.data_ingestion.config import ConfigurationError
+from src.reliability.policy import DEFAULT_MINIMUM_SAMPLES
 
 from .models import Itinerary
 from .planner import TransitPlanner
@@ -43,7 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reliable", action="store_true")
     parser.add_argument("--alternatives", type=int, default=5)
     parser.add_argument("--max-extra-minutes", type=int, default=30)
-    parser.add_argument("--minimum-samples", type=int, default=20)
+    parser.add_argument(
+        "--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES
+    )
     parser.add_argument("--search-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--reliability-effect", type=float, default=0.5)
     parser.add_argument("--travel-time-effect", type=float, default=0.5)

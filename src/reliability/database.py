@@ -14,6 +14,7 @@ from src.data_ingestion.config import DatabaseConfig
 
 from .models import DelayObservation, ReliabilityProfile, ScheduledStop
 from .classification import EARLY_THRESHOLD_SECONDS, LATE_THRESHOLD_SECONDS
+from .policy import DEFAULT_MINIMUM_SAMPLES
 
 
 class ReliabilityDatabase:
@@ -183,7 +184,7 @@ class ReliabilityDatabase:
         early_threshold: int = -120,
         late_threshold: int = 300,
         shrinkage_strength: float = 20.0,
-        minimum_samples: int = 20,
+        minimum_samples: int = DEFAULT_MINIMUM_SAMPLES,
     ) -> tuple[int, int, int, int]:
         sample_upsert = """
             WITH latest AS (
