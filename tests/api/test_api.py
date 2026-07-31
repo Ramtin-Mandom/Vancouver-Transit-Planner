@@ -10,6 +10,7 @@ from src.api.main import app
 from src.reliability.models import ProfileSelection
 from src.routing.models import (
     Itinerary,
+    LegStop,
     ReliableAlternative,
     ReliableSearchResult,
     RouteLeg,
@@ -66,6 +67,10 @@ def alternative(trip_id, departure_hour, arrival_hour, score):
                 departure_time=departure,
                 arrival_time=arrival,
                 direction_id=0,
+                stops=(
+                    LegStop(ORIGIN, 7, None, departure),
+                    LegStop(DESTINATION, 9, arrival, None),
+                ),
             ),
         ),
     )
@@ -182,6 +187,32 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
     assert [item["rank"] for item in body["alternatives"]] == [1, 2]
     assert body["alternatives"][0]["duration_display"] == "01:00:00"
     assert body["timing"]["total_ms"] == 6.0
+    assert body["alternatives"][0]["legs"][0]["stops"] == [
+        {
+            "stop": {
+                "stop_id": "646",
+                "stop_code": "50001",
+                "stop_name": "Granville Station",
+                "latitude": 49.283,
+                "longitude": -123.117,
+            },
+            "stop_sequence": 7,
+            "arrival_time": None,
+            "departure_time": "08:00:00",
+        },
+        {
+            "stop": {
+                "stop_id": "31",
+                "stop_code": "60001",
+                "stop_name": "UBC Exchange",
+                "latitude": 49.267,
+                "longitude": -123.247,
+            },
+            "stop_sequence": 9,
+            "arrival_time": "09:00:00",
+            "departure_time": None,
+        },
+    ]
 
 
 def test_gtfs_departure_time_beyond_24_hours(client, api_services):

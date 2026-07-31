@@ -28,6 +28,7 @@ from .models import (
     Stop,
 )
 from .route_results import itinerary_identity
+from .reconstruction import build_leg_stops, load_connection_stops
 
 EPSILON = 1e-9
 DEFAULT_MAX_TRANSFERS = 3
@@ -381,22 +382,25 @@ class ParetoTransitSearch:
         departure: timedelta, label: _Label,
     ) -> Itinerary:
         legs: list[RouteLeg] = []
+        stops_by_id = load_connection_stops(self.database, label.rides)
         index = 0
         while index < len(label.rides):
             first = label.rides[index]
             last = first
+            leg_rides = [first]
             index += 1
             while index < len(label.rides) and label.rides[index].trip_id == first.trip_id:
                 last = label.rides[index]
+                leg_rides.append(last)
                 index += 1
-            leg_origin = self.database.find_stop(first.from_stop_id)
-            leg_destination = self.database.find_stop(last.to_stop_id)
+            leg_origin = stops_by_id.get(first.from_stop_id)
+            leg_destination = stops_by_id.get(last.to_stop_id)
             if leg_origin is None or leg_destination is None:
                 raise RuntimeError("a routed stop disappeared during reconstruction")
             legs.append(RouteLeg(
                 first.trip_id, first.route_id, first.route_name,
                 leg_origin, leg_destination, first.departure_time, last.arrival_time,
-                first.direction_id,
+                first.direction_id, build_leg_stops(leg_rides, stops_by_id),
             ))
         return Itinerary(
             origin, destination, service_date, departure, label.arrival, tuple(legs)

@@ -35,6 +35,18 @@ class Connection:
     from_stop_sequence: int
     to_stop_sequence: int
     direction_id: int | None = None
+    from_arrival_time: timedelta | None = None
+    to_departure_time: timedelta | None = None
+
+
+@dataclass(frozen=True)
+class LegStop:
+    """One scheduled stop within the passenger's portion of a trip."""
+
+    stop: Stop
+    stop_sequence: int
+    arrival_time: timedelta | None
+    departure_time: timedelta | None
 
 
 @dataclass(frozen=True)
@@ -49,6 +61,7 @@ class RouteLeg:
     departure_time: timedelta
     arrival_time: timedelta
     direction_id: int | None = None
+    stops: tuple[LegStop, ...] = ()
 
 
 @dataclass(frozen=True)

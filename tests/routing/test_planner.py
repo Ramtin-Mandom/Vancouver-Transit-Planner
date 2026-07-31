@@ -109,6 +109,28 @@ def test_direct_journey_rides_through_consecutive_stops():
     assert result.legs[0].destination.stop_id == "C"
     assert result.arrival_time == at(8, 20)
     assert result.transfer_count == 0
+    assert [item.stop.stop_id for item in result.legs[0].stops] == ["A", "B", "C"]
+    assert [item.stop_sequence for item in result.legs[0].stops] == [1, 2, 3]
+    assert result.legs[0].stops[0].arrival_time is None
+    assert result.legs[0].stops[1].arrival_time == at(8, 10)
+    assert result.legs[0].stops[1].departure_time == at(8, 11)
+    assert result.legs[0].stops[-1].departure_time is None
+
+
+def test_leg_stop_boundaries_use_sequences_for_repeated_stop_ids():
+    trip = [
+        connection("LOOP", "weekday", "L", "A", "B", at(7), at(7, 5), 1),
+        connection("LOOP", "weekday", "L", "B", "A", at(7, 6), at(7, 10), 2),
+        connection("LOOP", "weekday", "L", "A", "C", at(7, 11), at(7, 20), 3),
+        connection("LOOP", "weekday", "L", "C", "D", at(7, 21), at(7, 30), 4),
+    ]
+    result = TransitPlanner(
+        FakeDatabase(stops("A", "B", "C", "D"), {"LOOP": trip})
+    ).plan("A", "D", MONDAY, at(7, 10))
+
+    assert result is not None
+    assert [item.stop.stop_id for item in result.legs[0].stops] == ["A", "C", "D"]
+    assert [item.stop_sequence for item in result.legs[0].stops] == [3, 4, 5]
 
 
 def test_one_transfer_journey_respects_minimum_transfer_time():
@@ -135,6 +157,10 @@ def test_one_transfer_journey_respects_minimum_transfer_time():
     assert result is not None
     assert [leg.trip_id for leg in result.legs] == ["T1", "T3"]
     assert result.transfer_count == 1
+    assert [[item.stop.stop_id for item in leg.stops] for leg in result.legs] == [
+        ["A", "B"],
+        ["B", "C"],
+    ]
 
 
 def test_unreachable_destination_returns_none():

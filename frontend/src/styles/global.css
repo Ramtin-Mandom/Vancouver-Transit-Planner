@@ -291,6 +291,29 @@ input[aria-invalid="true"] { border-color: #b94c3a; }
 .legStops time { color: var(--teal-dark); font-size: .78rem; font-weight: 800; }
 .legStops strong { font-size: .82rem; }
 .legStops > svg { color: #8ba0aa; }
+.stopDisclosure {
+  margin-top: 10px; padding: 5px 0; border: 0; background: transparent;
+  display: inline-flex; align-items: center; gap: 5px; color: var(--teal-dark);
+  font: inherit; font-size: .72rem; font-weight: 750;
+}
+.stopDisclosure:hover { color: var(--navy); }
+.stopDisclosure svg { transition: transform .18s ease; }
+.stopDisclosure .chevronUp { transform: rotate(180deg); }
+.legStopList {
+  list-style: none; margin: 5px 0 2px 4px; padding: 3px 0 3px 16px;
+  border-left: 2px solid #b9d4d1; display: grid; gap: 0;
+}
+.legStopList li {
+  position: relative; display: grid; grid-template-columns: 68px minmax(0, 1fr);
+  gap: 9px; padding: 5px 0; color: #607985; font-size: .74rem;
+}
+.legStopList li::before {
+  content: ""; position: absolute; width: 7px; height: 7px; left: -20.5px; top: 10px;
+  border-radius: 50%; background: #9ab9b5; border: 1px solid white;
+}
+.legStopList time { color: var(--teal-dark); font-weight: 700; }
+.legStopList .legStopBoundary { color: var(--navy); font-weight: 750; }
+.legStopList .legStopBoundary::before { width: 9px; height: 9px; left: -21.5px; top: 9px; background: var(--teal); }
 .technicalDetails { margin-top: 11px; }
 .technicalDetails summary, .profileDetails summary { color: #607985; font-size: .72rem; }
 .technicalDetails dl { display: flex; flex-wrap: wrap; gap: 7px 20px; margin: 9px 0 0; }

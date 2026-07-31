@@ -17,6 +17,7 @@ from .models import (
     Stop,
 )
 from .service_calendar import ServiceCalendar
+from .reconstruction import build_leg_stops, load_connection_stops
 
 if TYPE_CHECKING:
     from .route_results import RoutingPreferences
@@ -24,6 +25,8 @@ if TYPE_CHECKING:
 
 class RoutingRepository(Protocol):
     def find_stop(self, stop_id: str) -> Stop | None: ...
+
+    def find_stops(self, stop_ids: set[str]) -> dict[str, Stop]: ...
 
     def departures_from(
         self,
@@ -422,18 +425,21 @@ class TransitPlanner:
                 rides.append(step.connection)
             cursor = step.previous_stop_id
         rides.reverse()
+        stops_by_id = load_connection_stops(self.database, rides)
 
         legs: list[RouteLeg] = []
         index = 0
         while index < len(rides):
             first = rides[index]
             last = first
+            leg_rides = [first]
             index += 1
             while index < len(rides) and rides[index].trip_id == first.trip_id:
                 last = rides[index]
+                leg_rides.append(last)
                 index += 1
-            leg_origin = self.database.find_stop(first.from_stop_id)
-            leg_destination = self.database.find_stop(last.to_stop_id)
+            leg_origin = stops_by_id.get(first.from_stop_id)
+            leg_destination = stops_by_id.get(last.to_stop_id)
             if leg_origin is None or leg_destination is None:
                 raise RuntimeError("a routed stop disappeared during reconstruction")
             legs.append(
@@ -446,6 +452,7 @@ class TransitPlanner:
                     departure_time=first.departure_time,
                     arrival_time=last.arrival_time,
                     direction_id=first.direction_id,
+                    stops=build_leg_stops(leg_rides, stops_by_id),
                 )
             )
         return Itinerary(

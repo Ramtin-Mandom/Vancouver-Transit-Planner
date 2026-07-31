@@ -45,6 +45,8 @@ def _connection(row: dict[str, Any]) -> Connection:
         from_stop_sequence=row["from_stop_sequence"],
         to_stop_sequence=row["to_stop_sequence"],
         direction_id=row.get("direction_id"),
+        from_arrival_time=row.get("from_arrival_time"),
+        to_departure_time=row.get("to_departure_time"),
     )
 
 
@@ -103,6 +105,19 @@ class TransitDatabase:
             row = connection.execute(query, (stop_id,)).fetchone()
         return _stop(row) if row else None
 
+    def find_stops(self, stop_ids: set[str]) -> dict[str, Stop]:
+        """Return stop metadata for a collection of IDs in one query."""
+        if not stop_ids:
+            return {}
+        query = """
+            SELECT stop_id, stop_name, stop_code, stop_lat, stop_lon
+            FROM transit.stops
+            WHERE stop_id = ANY(%s)
+        """
+        with self._connection() as connection:
+            rows = connection.execute(query, (sorted(stop_ids),)).fetchall()
+        return {row["stop_id"]: _stop(row) for row in rows}
+
     def search_stops(self, stop_name: str, limit: int = 20) -> list[Stop]:
         query = """
             SELECT stop.stop_id, stop.stop_name, stop.stop_code,
@@ -141,15 +156,17 @@ class TransitDatabase:
                 r.route_short_name, r.route_long_name,
                 current.stop_id AS from_stop_id,
                 following.stop_id AS to_stop_id,
+                current.arrival_time AS from_arrival_time,
                 current.departure_time,
                 following.arrival_time,
+                following.departure_time AS to_departure_time,
                 current.stop_sequence AS from_stop_sequence,
                 following.stop_sequence AS to_stop_sequence
             FROM transit.stop_times AS current
             JOIN transit.trips AS t ON t.trip_id = current.trip_id
             JOIN transit.routes AS r ON r.route_id = t.route_id
             JOIN LATERAL (
-                SELECT stop_id, arrival_time, stop_sequence, drop_off_type
+                SELECT stop_id, arrival_time, departure_time, stop_sequence, drop_off_type
                 FROM transit.stop_times
                 WHERE trip_id = current.trip_id
                   AND stop_sequence > current.stop_sequence
@@ -200,14 +217,16 @@ class TransitDatabase:
                    r.route_short_name, r.route_long_name,
                    current.stop_id AS from_stop_id,
                    following.stop_id AS to_stop_id,
+                   current.arrival_time AS from_arrival_time,
                    current.departure_time, following.arrival_time,
+                   following.departure_time AS to_departure_time,
                    current.stop_sequence AS from_stop_sequence,
                    following.stop_sequence AS to_stop_sequence
             FROM transit.stop_times AS current
             JOIN transit.trips AS t ON t.trip_id = current.trip_id
             JOIN transit.routes AS r ON r.route_id = t.route_id
             JOIN LATERAL (
-                SELECT stop_id, arrival_time, stop_sequence
+                SELECT stop_id, arrival_time, departure_time, stop_sequence
                 FROM transit.stop_times
                 WHERE trip_id = current.trip_id
                   AND stop_sequence > current.stop_sequence
@@ -240,8 +259,10 @@ class TransitDatabase:
                 r.route_short_name, r.route_long_name,
                 current.stop_id AS from_stop_id,
                 following.stop_id AS to_stop_id,
+                current.arrival_time AS from_arrival_time,
                 current.departure_time,
                 following.arrival_time,
+                following.departure_time AS to_departure_time,
                 current.stop_sequence AS from_stop_sequence,
                 following.stop_sequence AS to_stop_sequence
             FROM transit.stop_times AS current

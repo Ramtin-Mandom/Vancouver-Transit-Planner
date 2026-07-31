@@ -9,6 +9,7 @@ from src.routing.models import ReliableSearchResult, Stop
 
 from .schemas import (
     RouteAlternativeResponse,
+    LegStopResponse,
     RouteLegResponse,
     RoutePlanResponse,
     SearchTimingResponse,
@@ -49,6 +50,23 @@ def serialize_result(
                 duration_seconds=int(
                     (leg.arrival_time - leg.departure_time).total_seconds()
                 ),
+                stops=[
+                    LegStopResponse(
+                        stop=serialize_stop(item.stop),
+                        stop_sequence=item.stop_sequence,
+                        arrival_time=(
+                            format_gtfs_time(item.arrival_time)
+                            if item.arrival_time is not None
+                            else None
+                        ),
+                        departure_time=(
+                            format_gtfs_time(item.departure_time)
+                            if item.departure_time is not None
+                            else None
+                        ),
+                    )
+                    for item in leg.stops
+                ],
             )
             for leg in itinerary.legs
         ]

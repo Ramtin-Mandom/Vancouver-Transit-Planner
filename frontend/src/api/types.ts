@@ -16,6 +16,14 @@ export interface RouteLeg {
   departure_time: string;
   arrival_time: string;
   duration_seconds: number;
+  stops: LegStop[];
+}
+
+export interface LegStop {
+  stop: Stop;
+  stop_sequence: number;
+  arrival_time: string | null;
+  departure_time: string | null;
 }
 
 export interface RouteAlternative {

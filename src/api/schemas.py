@@ -25,6 +25,13 @@ class StopResponse(ApiModel):
     longitude: float | None
 
 
+class LegStopResponse(ApiModel):
+    stop: StopResponse
+    stop_sequence: int
+    arrival_time: str | None
+    departure_time: str | None
+
+
 class RouteLegResponse(ApiModel):
     trip_id: str
     route_id: str
@@ -35,6 +42,7 @@ class RouteLegResponse(ApiModel):
     departure_time: str
     arrival_time: str
     duration_seconds: int
+    stops: list[LegStopResponse]
 
 
 class RouteAlternativeResponse(ApiModel):

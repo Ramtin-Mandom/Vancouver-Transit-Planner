@@ -44,7 +44,13 @@ export const routeResult: RoutePlanResponse = {
           destination: { ...origin, stop_id: "100", stop_name: "Broadway Station" },
           departure_time: "25:12:00",
           arrival_time: "25:32:00",
-          duration_seconds: 1200
+          duration_seconds: 1200,
+          stops: [
+            { stop: origin, stop_sequence: 1, arrival_time: null, departure_time: "25:12:00" },
+            { stop: { ...origin, stop_id: "50", stop_name: "Davie Street" }, stop_sequence: 2, arrival_time: "25:20:00", departure_time: "25:21:00" },
+            { stop: { ...origin, stop_id: "75", stop_name: "City Hall" }, stop_sequence: 3, arrival_time: "25:26:00", departure_time: "25:26:00" },
+            { stop: { ...origin, stop_id: "100", stop_name: "Broadway Station" }, stop_sequence: 4, arrival_time: "25:32:00", departure_time: null }
+          ]
         },
         {
           trip_id: "TRIP-B",
@@ -55,7 +61,12 @@ export const routeResult: RoutePlanResponse = {
           destination,
           departure_time: "25:38:00",
           arrival_time: "26:00:00",
-          duration_seconds: 1320
+          duration_seconds: 1320,
+          stops: [
+            { stop: { ...origin, stop_id: "100", stop_name: "Broadway Station" }, stop_sequence: 10, arrival_time: null, departure_time: "25:38:00" },
+            { stop: { ...origin, stop_id: "110", stop_name: "Alma Street" }, stop_sequence: 11, arrival_time: "25:48:00", departure_time: "25:49:00" },
+            { stop: destination, stop_sequence: 12, arrival_time: "26:00:00", departure_time: null }
+          ]
         }
       ]
     },
@@ -81,7 +92,11 @@ export const routeResult: RoutePlanResponse = {
           destination,
           departure_time: "25:15:00",
           arrival_time: "25:55:00",
-          duration_seconds: 2400
+          duration_seconds: 2400,
+          stops: [
+            { stop: origin, stop_sequence: 1, arrival_time: null, departure_time: "25:15:00" },
+            { stop: destination, stop_sequence: 2, arrival_time: "25:55:00", departure_time: null }
+          ]
         }
       ]
     }

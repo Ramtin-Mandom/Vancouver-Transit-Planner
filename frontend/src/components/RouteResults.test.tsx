@@ -32,6 +32,37 @@ describe("RouteResults", () => {
     expect(screen.getByText(/Limited historical data/)).toBeVisible();
   });
 
+  it("expands and collapses ordered leg stops independently", async () => {
+    render(<RouteResults result={routeResult} />);
+    const first = screen.getByRole("button", { name: "View 2 intermediate stops" });
+    const second = screen.getByRole("button", { name: "View 1 intermediate stop" });
+
+    expect(first).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Davie Street")).not.toBeInTheDocument();
+    await userEvent.click(first);
+    expect(first).toHaveAttribute("aria-expanded", "true");
+    const firstList = screen.getByRole("list", { name: "5 scheduled stops" });
+    expect(within(firstList).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      "25:12:00Granville Station",
+      "25:20:00Davie Street",
+      "25:26:00City Hall",
+      "25:32:00Broadway Station"
+    ]);
+    expect(second).toHaveAttribute("aria-expanded", "false");
+
+    await userEvent.click(second);
+    expect(screen.getByText("Alma Street")).toBeVisible();
+    expect(first).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(first);
+    expect(screen.queryByText("Davie Street")).not.toBeInTheDocument();
+  });
+
+  it("does not show a disclosure for a leg without intermediate stops", async () => {
+    render(<RouteResults result={routeResult} />);
+    await userEvent.click(screen.getByRole("button", { name: "View itinerary" }));
+    expect(screen.getAllByRole("button", { name: /intermediate/ })).toHaveLength(2);
+  });
+
   it("expands non-primary route details with a button", async () => {
     render(<RouteResults result={routeResult} />);
     const buttons = screen.getAllByRole("button", { name: "View itinerary" });
