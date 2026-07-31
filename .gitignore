@@ -220,3 +220,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# PostgreSQL database dumps
+*.dump
+*.backup
+*.sql.gz

@@ -21,6 +21,24 @@ class ProfileResolver:
         self.minimum_samples = minimum_samples
         self._cache = {}
 
+    def preload(self, keys: set[tuple[str, int | None, str]]) -> int:
+        """Populate the request-local resolver cache with two bulk queries."""
+        loader = getattr(self.database, "bulk_profile_data", None)
+        if not callable(loader) or not keys:
+            return 0
+        exact, parents = loader(keys)
+        for key in keys:
+            route_id, direction_id, window = key
+            self._cache[key] = self._select(
+                route_id,
+                direction_id,
+                exact.get(key),
+                lambda level, route, direction: parents.get((
+                    level, route or "*", -1 if direction is None else direction
+                )),
+            )
+        return 2
+
     def set_statement_timeout(self, milliseconds: int) -> None:
         configure = getattr(self.database, "set_statement_timeout", None)
         if callable(configure):
@@ -39,6 +57,16 @@ class ProfileResolver:
             return self._cache[key]
 
         profile = self.database.profile(route_id, direction_id, window)
+        selection = self._select(
+            route_id,
+            direction_id,
+            profile,
+            getattr(self.database, "fallback_profile", lambda *args: None),
+        )
+        self._cache[key] = selection
+        return selection
+
+    def _select(self, route_id, direction_id, profile, fallback_lookup):
         if profile is not None:
             selection = ProfileSelection(
                 profile, "route_direction_window",
@@ -48,13 +76,13 @@ class ProfileResolver:
             # Exact cells can be absent. Materialize a lightweight profile from
             # the first precomputed parent so routing still uses the hierarchy.
             level = "route_direction"
-            parent = self.database.fallback_profile(level, route_id, direction_id)
+            parent = fallback_lookup(level, route_id, direction_id)
             if parent is None:
                 level = "route"
-                parent = self.database.fallback_profile(level, route_id, None)
+                parent = fallback_lookup(level, route_id, None)
             if parent is None:
                 level = "network"
-                parent = self.database.fallback_profile(level, None, None)
+                parent = fallback_lookup(level, None, None)
             fallback = None
             if parent:
                 probability = float(parent["reliability_probability"])
@@ -82,5 +110,4 @@ class ProfileResolver:
             selection = ProfileSelection(
                 fallback, level if parent else "insufficient-data", True
             )
-        self._cache[key] = selection
         return selection

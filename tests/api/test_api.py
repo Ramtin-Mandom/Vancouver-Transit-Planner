@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.api.dependencies import ApiServices
 from src.api.main import app
+from src.routing.reliable import ReliableSearchTimeout
 from src.reliability.models import ProfileSelection
 from src.routing.models import (
     Itinerary,
@@ -15,6 +16,10 @@ from src.routing.models import (
     ReliableSearchResult,
     RouteLeg,
     SearchTiming,
+    SearchCacheStatistics,
+    SearchDiagnosticCounters,
+    SearchDiagnostics,
+    SearchDiagnosticTimings,
     Stop,
 )
 
@@ -213,6 +218,51 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
             "departure_time": None,
         },
     ]
+    assert body["diagnostics"] is None
+
+
+def test_diagnostics_are_returned_only_when_requested(client, api_services):
+    diagnostics = SearchDiagnostics(
+        SearchDiagnosticTimings(measured_search_ms=2.0),
+        SearchDiagnosticCounters(queue_pushes=1),
+        SearchCacheStatistics(departure_query_count=1, departure_cache_misses=1),
+    )
+    original = api_services.planner.get_ranked_route_result
+
+    def profiled(*args, **kwargs):
+        result = original(*args, **kwargs)
+        return ReliableSearchResult(
+            result.alternatives, result.timing, result.labels_pruned,
+            diagnostics if kwargs.get("include_diagnostics") else None,
+        )
+
+    api_services.planner.get_ranked_route_result = profiled
+    plain = client.post("/routes/plan", json=valid_request())
+    enabled = client.post(
+        "/routes/plan", json=valid_request(include_diagnostics=True)
+    )
+    assert plain.json()["diagnostics"] is None
+    assert enabled.json()["diagnostics"]["timings_ms"]["measured_search_ms"] == 2.0
+    assert api_services.planner.calls[-1][1]["include_diagnostics"] is True
+
+
+def test_timeout_response_includes_partial_diagnostics(client, api_services):
+    diagnostics = SearchDiagnostics(
+        SearchDiagnosticTimings(measured_search_ms=3.0),
+        SearchDiagnosticCounters(queue_pops=2),
+        SearchCacheStatistics(profile_resolver_calls=1, profile_cache_misses=1),
+    )
+
+    def timeout(*args, **kwargs):
+        raise ReliableSearchTimeout("exceeded", diagnostics, {"timed_out": True})
+
+    api_services.planner.get_ranked_route_result = timeout
+    response = client.post(
+        "/routes/plan", json=valid_request(include_diagnostics=True)
+    )
+    assert response.status_code == 504
+    assert response.json()["detail"] == "Route planning exceeded the configured timeout."
+    assert response.json()["diagnostics"]["counters"]["queue_pops"] == 2
 
 
 def test_gtfs_departure_time_beyond_24_hours(client, api_services):

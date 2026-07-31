@@ -190,3 +190,151 @@ def test_search_timeout_is_enforced_during_profile_resolution():
             SlowResolver({("R", "D"): .9}),
             timeout_seconds=.001,
         )
+
+
+def test_profiled_search_reports_consistent_diagnostics_without_changing_routes():
+    trips = {
+        "T1": [connection("T1", "weekday", "R", "A", "D", at(8), at(8, 10))],
+        "T2": [connection("T2", "weekday", "R", "A", "D", at(8, 1), at(8, 10))],
+    }
+    planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips))
+    plain = planner.plan_reliable_alternatives(
+        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9})
+    )
+    profiled = planner.plan_reliable_alternatives(
+        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
+        include_diagnostics=True,
+    )
+    assert [item.itinerary for item in plain.alternatives] == [
+        item.itinerary for item in profiled.alternatives
+    ]
+    diagnostics = profiled.diagnostics
+    assert diagnostics is not None
+    assert all(value >= 0 for value in vars(diagnostics.timings_ms).values())
+    cache = diagnostics.cache_statistics
+    assert cache.departure_query_count == cache.departure_cache_misses
+    assert cache.trip_query_count == cache.trip_cache_misses
+    assert cache.transfer_query_count == cache.transfer_cache_misses
+    assert cache.profile_resolver_calls == cache.profile_cache_misses
+    assert cache.profile_cache_hits >= 1
+    counters = diagnostics.counters
+    assert counters.queue_pops <= counters.queue_pushes
+    assert counters.labels_accepted <= counters.labels_created
+    assert counters.boardable_departures <= counters.departures_examined
+    assert counters.connections_examined >= counters.trips_examined
+
+
+def test_timeout_carries_partial_diagnostics():
+    class SlowResolver(Resolver):
+        def resolve(self, *args):
+            time.sleep(0.01)
+            return super().resolve(*args)
+
+    trips = {
+        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
+    }
+    with pytest.raises(ReliableSearchTimeout) as caught:
+        TransitPlanner(FakeDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
+            "A", "D", MONDAY, at(7, 59), SlowResolver({("R", "D"): .9}),
+            timeout_seconds=.001, include_diagnostics=True,
+        )
+    assert caught.value.diagnostics is not None
+    assert caught.value.diagnostics.timings_ms.measured_search_ms >= 0
+    assert caught.value.diagnostics.cache_statistics.profile_resolver_calls == 1
+
+
+def test_bulk_index_path_executes_no_hot_loop_repository_queries():
+    trips = {
+        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
+    }
+
+    class BulkDatabase(FakeDatabase):
+        def __init__(self):
+            super().__init__(stops("A", "D"), trips)
+            self.bulk_counts = {"departures": 0, "transfers": 0, "trips": 0}
+
+        def bulk_departures_in_window(self, earliest, latest, service_ids=None):
+            self.bulk_counts["departures"] += 1
+            return [item for values in self.trips.values() for item in values]
+
+        def bulk_transfers(self):
+            self.bulk_counts["transfers"] += 1
+            return []
+
+        def bulk_trip_connections(self, trip_ids, *, batch_size=2000):
+            self.bulk_counts["trips"] += 1
+            return [item for trip_id in sorted(trip_ids) for item in self.trips[trip_id]]
+
+        def departures_from(self, *args, **kwargs):
+            raise AssertionError("hot-loop departure query")
+
+        def trip_connections(self, *args, **kwargs):
+            raise AssertionError("hot-loop trip query")
+
+        def transfers_from(self, *args, **kwargs):
+            raise AssertionError("hot-loop transfer query")
+
+    database = BulkDatabase()
+    result = TransitPlanner(database).plan_reliable_alternatives(
+        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
+        include_diagnostics=True,
+    )
+    assert database.bulk_counts == {"departures": 1, "transfers": 1, "trips": 1}
+    assert result.diagnostics.cache_statistics.unexpected_queries_during_search == 0
+    assert result.alternatives[0].itinerary.legs[0].trip_id == "T"
+
+
+def test_nonboardable_departure_does_not_trigger_frontier_trip_loading():
+    trips = {
+        "PAST": [
+            connection("PAST", "weekday", "R", "A", "D", at(7, 58), at(8, 8))
+        ]
+    }
+
+    class BulkDatabase(FakeDatabase):
+        trip_batches = 0
+
+        def bulk_departures_in_window(self, earliest, latest, service_ids=None):
+            return list(self.trips["PAST"])
+
+        def bulk_transfers(self):
+            return []
+
+        def bulk_trip_connections(self, trip_ids, *, batch_size=2000):
+            self.trip_batches += 1
+            return list(self.trips["PAST"])
+
+    database = BulkDatabase(stops("A", "D"), trips)
+    result = TransitPlanner(database).plan_reliable_alternatives(
+        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
+        include_diagnostics=True,
+    )
+    assert not result.alternatives
+    assert database.trip_batches == 0
+    assert result.diagnostics.counters.unique_frontier_trips_requested == 0
+
+
+def test_timeout_diagnostics_include_completed_frontier_batch():
+    trips = {
+        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
+    }
+
+    class SlowBulkDatabase(FakeDatabase):
+        def bulk_departures_in_window(self, earliest, latest, service_ids=None):
+            return list(self.trips["T"])
+
+        def bulk_transfers(self):
+            return []
+
+        def bulk_trip_connections(self, trip_ids, *, batch_size=2000):
+            time.sleep(0.01)
+            return []
+
+    with pytest.raises(ReliableSearchTimeout) as caught:
+        TransitPlanner(SlowBulkDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
+            "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
+            timeout_seconds=.001, include_diagnostics=True,
+        )
+    diagnostics = caught.value.diagnostics
+    assert diagnostics.counters.frontier_trip_batch_query_count == 1
+    assert diagnostics.counters.unique_frontier_trips_requested == 1

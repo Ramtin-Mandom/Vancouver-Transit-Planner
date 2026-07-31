@@ -67,6 +67,113 @@ class SearchTimingResponse(ApiModel):
     total_ms: float
 
 
+class SearchDiagnosticTimingsResponse(ApiModel):
+    initial_preload_ms: float = 0.0
+    eager_trip_preload_ms: float = 0.0
+    frontier_trip_loading_ms: float = 0.0
+    frontier_trip_query_ms: float = 0.0
+    frontier_trip_indexing_ms: float = 0.0
+    reconstruction_trip_loading_ms: float = 0.0
+    search_cpu_excluding_frontier_io_ms: float = 0.0
+    preload_total_ms: float = 0.0
+    departures_preload_ms: float = 0.0
+    transfers_preload_ms: float = 0.0
+    trip_connections_preload_ms: float = 0.0
+    reliability_preload_ms: float = 0.0
+    search_cpu_ms: float = 0.0
+    fallback_query_ms: float = 0.0
+    statement_timeout_setup_ms: float = 0.0
+    stop_lookup_ms: float = 0.0
+    active_service_lookup_ms: float = 0.0
+    departure_queries_ms: float = 0.0
+    trip_queries_ms: float = 0.0
+    transfer_queries_ms: float = 0.0
+    profile_resolution_ms: float = 0.0
+    reconstruction_queries_ms: float = 0.0
+    queue_processing_ms: float = 0.0
+    transfer_expansion_ms: float = 0.0
+    departure_scanning_ms: float = 0.0
+    trip_scanning_ms: float = 0.0
+    label_processing_ms: float = 0.0
+    destination_filtering_ms: float = 0.0
+    reconstruction_ms: float = 0.0
+    measured_search_ms: float = 0.0
+    unclassified_search_ms: float = 0.0
+
+
+class SearchDiagnosticCountersResponse(ApiModel):
+    candidate_trip_ids_from_frontier: int = 0
+    unique_frontier_trips_requested: int = 0
+    unique_frontier_trips_loaded: int = 0
+    frontier_connections_loaded: int = 0
+    frontier_trip_batch_query_count: int = 0
+    frontier_trip_batch_sizes: tuple[int, ...] = ()
+    average_frontier_trip_batch_size: float = 0.0
+    maximum_frontier_trip_batch_size: int = 0
+    single_trip_batch_count: int = 0
+    repeated_trip_fetch_attempts: int = 0
+    known_empty_trip_count: int = 0
+    reconstruction_trip_batch_count: int = 0
+    eager_trips_avoided: int = 0
+    eager_connections_avoided: int = 0
+    unexpected_nonbulk_trip_queries: int = 0
+    queue_pushes: int = 0
+    queue_pops: int = 0
+    stale_labels_skipped: int = 0
+    labels_created: int = 0
+    labels_accepted: int = 0
+    labels_pruned: int = 0
+    dominance_checks: int = 0
+    maximum_queue_size: int = 0
+    maximum_labels_in_bucket: int = 0
+    total_label_buckets: int = 0
+    stops_expanded: int = 0
+    transfer_rules_examined: int = 0
+    walking_transfer_labels_created: int = 0
+    departures_examined: int = 0
+    boardable_departures: int = 0
+    trips_examined: int = 0
+    connections_examined: int = 0
+    destination_labels_found: int = 0
+    alternatives_reconstructed: int = 0
+    alternatives_returned: int = 0
+
+
+class SearchCacheStatisticsResponse(ApiModel):
+    bulk_departure_query_count: int = 0
+    bulk_transfer_query_count: int = 0
+    bulk_trip_query_count: int = 0
+    bulk_profile_query_count: int = 0
+    unique_departures_loaded: int = 0
+    unique_trips_loaded: int = 0
+    unique_connections_loaded: int = 0
+    unique_transfers_loaded: int = 0
+    request_index_memory_estimate_bytes: int = 0
+    unexpected_queries_during_search: int = 0
+    departure_query_count: int = 0
+    departure_rows_loaded: int = 0
+    departure_cache_hits: int = 0
+    departure_cache_misses: int = 0
+    trip_query_count: int = 0
+    trip_connection_rows_loaded: int = 0
+    trip_cache_hits: int = 0
+    trip_cache_misses: int = 0
+    transfer_query_count: int = 0
+    transfer_rows_loaded: int = 0
+    transfer_cache_hits: int = 0
+    transfer_cache_misses: int = 0
+    profile_resolver_calls: int = 0
+    profile_cache_hits: int = 0
+    profile_cache_misses: int = 0
+
+
+class SearchDiagnosticsResponse(ApiModel):
+    timings_ms: SearchDiagnosticTimingsResponse
+    counters: SearchDiagnosticCountersResponse
+    cache_statistics: SearchCacheStatisticsResponse
+    profiling_overhead_note: str
+
+
 class RoutePlanResponse(ApiModel):
     origin: StopResponse
     destination: StopResponse
@@ -74,6 +181,7 @@ class RoutePlanResponse(ApiModel):
     requested_departure_time: str
     alternatives: list[RouteAlternativeResponse]
     timing: SearchTimingResponse
+    diagnostics: SearchDiagnosticsResponse | None = None
 
 
 class RoutePlanRequest(ApiModel):
@@ -88,6 +196,7 @@ class RoutePlanRequest(ApiModel):
     reliability_effect: float = Field(default=0.5, ge=0)
     travel_time_effect: float = Field(default=0.5, ge=0)
     transfer_effect: float = Field(default=0.0, ge=0)
+    include_diagnostics: bool = False
 
     @model_validator(mode="after")
     def validate_route_request(self) -> "RoutePlanRequest":

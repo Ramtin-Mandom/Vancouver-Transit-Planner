@@ -129,9 +129,19 @@ def ranked_search_result(
         preferences=preferences,
     )
     ranking_ms = (perf_counter() - started) * 1000
+    diagnostics = result.diagnostics
+    if diagnostics is not None:
+        diagnostics = replace(
+            diagnostics,
+            counters=replace(
+                diagnostics.counters,
+                alternatives_returned=len(alternatives),
+            ),
+        )
     return replace(
         result,
         alternatives=tuple(alternatives),
+        diagnostics=diagnostics,
         timing=replace(
             result.timing,
             ranking_ms=result.timing.ranking_ms + ranking_ms,

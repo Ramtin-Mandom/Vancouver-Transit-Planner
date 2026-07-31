@@ -6,6 +6,7 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import date
 from typing import Any
+from threading import RLock
 
 import psycopg
 from psycopg.rows import dict_row
@@ -24,6 +25,7 @@ class ReliabilityDatabase:
         self._profile_connection = None
         self._schedule_cache: dict[str, list[ScheduledStop]] = {}
         self._statement_timeout_ms = 30_000
+        self._profile_lock = RLock()
 
     def set_statement_timeout(self, milliseconds: int) -> None:
         self._statement_timeout_ms = max(1, milliseconds)
@@ -391,8 +393,10 @@ class ReliabilityDatabase:
         row = self._profile_session().execute(
             query, (route_id, direction_id, time_window)
         ).fetchone()
-        if not row:
-            return None
+        return self._profile_from_row(row) if row else None
+
+    @staticmethod
+    def _profile_from_row(row: dict[str, Any]) -> ReliabilityProfile:
         return ReliabilityProfile(
             route_id=row["route_id"],
             stop_id=None,
@@ -413,6 +417,50 @@ class ReliabilityDatabase:
             reliability_probability=row["reliability_probability"],
             distinct_service_dates=row["distinct_service_dates"],
         )
+
+    def bulk_profile_data(
+        self, keys: set[tuple[str, int | None, str]]
+    ) -> tuple[
+        dict[tuple[str, int | None, str], ReliabilityProfile],
+        dict[tuple[str, str, int], dict[str, Any]],
+    ]:
+        """Load exact cells and all applicable parents in two queries."""
+        if not keys:
+            return {}, {}
+        routes = sorted({route_id for route_id, _, _ in keys})
+        windows = sorted({window for _, _, window in keys})
+        exact_query = """
+            SELECT route_id, direction_id, time_window, sample_count,
+                   distinct_service_dates, mean_delay_seconds,
+                   mean_absolute_delay_seconds, delay_stddev_seconds,
+                   p50_delay_seconds, p90_absolute_delay_seconds,
+                   early_probability, on_time_probability, late_probability,
+                   reliability_probability
+            FROM transit.route_direction_reliability
+            WHERE route_id = ANY(%s::text[])
+              AND time_window = ANY(%s::text[])
+        """
+        fallback_query = """
+            SELECT profile_level, route_key, direction_key, sample_count,
+                   distinct_service_dates, on_time_probability,
+                   reliability_probability
+            FROM transit.reliability_fallback_profiles
+            WHERE route_key = ANY(%s::text[]) OR route_key = '*'
+        """
+        with self._profile_lock:
+            session = self._profile_session()
+            exact_rows = session.execute(exact_query, (routes, windows)).fetchall()
+            fallback_rows = session.execute(fallback_query, (routes,)).fetchall()
+        exact = {
+            (row["route_id"], row["direction_id"], row["time_window"]):
+                self._profile_from_row(row)
+            for row in exact_rows
+        }
+        fallbacks = {
+            (row["profile_level"], row["route_key"], row["direction_key"]): row
+            for row in fallback_rows
+        }
+        return exact, fallbacks
 
     def fallback_profile(
         self, level: str, route_id: str | None, direction_id: int | None
