@@ -632,3 +632,148 @@ Any future live-feed test must additionally require:
 ```powershell
 $env:RUN_LIVE_GTFS_RT_TESTS = "1"
 ```
+
+## Optimization
+
+The reliable Pareto search has been optimized in three measured stages. The
+goal throughout was to reduce database overhead without changing routing,
+dominance, reliability, scoring, reconstruction, or deterministic ordering.
+All comparisons remove timing and diagnostics before checking equality.
+
+### Search profiling
+
+The original timing response exposed only data loading, search, ranking, and
+total time, which made database latency indistinguishable from queue and label
+CPU work. Optional profiling is now enabled with:
+
+```json
+{
+  "include_diagnostics": true
+}
+```
+
+Normal requests leave profiling disabled to avoid its measurement overhead.
+Profiled responses aggregate query, cache, queue, label, dominance, transfer,
+departure, trip, reliability-profile, filtering, and reconstruction activity.
+Timeout responses retain the completed partial diagnostics. Logging emits one
+summary per profiled request rather than one message per label or query.
+
+The representative request initially took approximately 8,020 ms and showed
+the N+1 data-access pattern clearly:
+
+| Operation | Count |
+|---|---:|
+| Departure queries | 3,115 |
+| Trip-connection queries | 6,782 |
+| Transfer queries | 3,115 |
+| Reliability profile cache misses | 11,810 |
+| Labels created | 419,879 |
+| Dominance comparisons | 713,215 |
+
+These measurements showed that data access needed to be optimized before
+changing search pruning or Pareto semantics.
+
+### Request-local bulk indexes
+
+The first data-access optimization loaded request-relevant departures and
+transfers in bulk, batch-loaded trip connections, and prefetched reliability
+profiles. `SearchDataIndex` groups departures by stop, transfers by origin
+stop, and connections by trip. Departures and trip sequences are sorted, and
+binary search selects the applicable time or stop-sequence range. GTFS times
+after `24:00:00` remain represented as `timedelta` values.
+
+Transit preload runs in a read-only repeatable-read snapshot. Trip-ID lists are
+deduplicated and split into bounded parameterized batches. The bulk connection
+query uses a windowed consecutive-stop scan instead of the slower correlated
+next-stop query. Existing indexes are reused:
+
+- `idx_stop_times_stop_departure`;
+- the stop-times trip/sequence primary key;
+- `idx_transfers_from_stop`;
+- `idx_route_direction_reliability_lookup`;
+- the reliability-fallback primary key.
+
+This eager implementation eliminated SQL from the queue-processing loop, but
+it loaded every trip referenced by every departure in the full request window:
+5,189 trips and 148,097 connections. That reduced N+1 latency but spent roughly
+1.2-1.6 seconds loading trips that the search never reached.
+
+### Frontier-driven trip loading
+
+The production default is now the internal `frontier` trip-loading mode.
+Departures, transfers, active services, stop information, and reliability
+profiles remain inexpensive bulk preloads. Complete trip chains are loaded
+only after a popped label encounters departures that pass the existing cheap
+boarding checks:
+
+- stop and departure-time eligibility;
+- service-day and search-horizon bounds;
+- transfer rules and minimum transfer time;
+- maximum transfers;
+- the existing same-trip boarding behavior.
+
+For each label, all newly relevant trip IDs are collected before processing
+that label, deduplicated, and sent through the existing parameterized bulk
+trip query. `RequestTripConnectionLoader` owns only request-local state:
+loaded trips, known-empty trips, pending/failed IDs, ordered connections, and
+batch statistics. A requested trip, including one with no returned rows, is
+never fetched twice during the request. This preserves priority-search
+semantics and does not delay or requeue labels to manufacture larger batches.
+
+The eager mode remains available internally for direct comparison by passing
+`trip_loading_mode="eager"`. It is not exposed as a normal API request field.
+The legacy mode is retained by the benchmark adapter only.
+
+### Measured results
+
+The benchmark alternates execution order across trials to reduce PostgreSQL
+cache-order bias:
+
+```powershell
+py -3.12 -m scripts.benchmark_route_search --runs 3 --compare-legacy
+```
+
+For the representative local request, the measured medians were:
+
+| Mode | Median total | Trips loaded/queried | Connections loaded | Trip queries | Index memory |
+|---|---:|---:|---:|---:|---:|
+| Frontier | 3,143 ms | 627 | 15,846 | 125 batched | 10.64 MB |
+| Eager bulk | 4,539 ms | 5,189 | 148,097 | 3 batched | 18.08 MB |
+| Legacy lazy | 3,737 ms | 4,019 | 67,406 | 4,019 individual | not estimated |
+
+Frontier loading avoided 4,562 eager trips and 132,251 eager connections. Its
+125 batches averaged 5.016 trips, had a maximum size of 49, and included 57
+single-trip batches. Those frontier queries took approximately 279 ms in
+total, so speculative loading was not added merely to increase batch size.
+`unexpected_nonbulk_trip_queries` and `repeated_trip_fetch_attempts` were both
+zero.
+
+All three modes returned the same complete normalized response, with hash:
+
+```text
+b1955dbf4efacd2d48bcdec6330cb76dd3e38a86cb3af6a325948ce9d539a21a
+```
+
+The comparison includes trip IDs, stop IDs, departure and arrival times,
+transfer counts, intermediate stops, reliability values, combined scores,
+fallback levels, alternatives, and ordering. No approximate pruning, label
+cap, reduced horizon, altered dominance rule, or reliability formula was
+introduced.
+
+The remaining representative costs are the initial departure preload at about
+1.39 seconds and search/label CPU at about 1.12 seconds. Frontier query I/O is
+now much smaller. Timings such as `frontier_trip_loading_ms` intentionally
+overlap their query and indexing subcategories; use total time and
+`search_cpu_excluding_frontier_io_ms` rather than summing every diagnostic
+field. Results vary with the GTFS snapshot, PostgreSQL cache state, hardware,
+and concurrent load.
+
+The optimized behavior is covered by deterministic tests for route parity,
+profile fallback parity, GTFS times beyond 24 hours, batching and
+deduplication, empty trips, non-boardable departures, request isolation, hot
+loop query prevention, timeout diagnostics, and API compatibility. Run:
+
+```powershell
+python -m pytest -m "not integration" -v
+python -m pytest -m integration -s
+```
