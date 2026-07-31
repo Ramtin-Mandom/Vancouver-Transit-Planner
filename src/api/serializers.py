@@ -12,6 +12,10 @@ from .schemas import (
     LegStopResponse,
     RouteLegResponse,
     RoutePlanResponse,
+    SearchCacheStatisticsResponse,
+    SearchDiagnosticCountersResponse,
+    SearchDiagnosticTimingsResponse,
+    SearchDiagnosticsResponse,
     SearchTimingResponse,
     StopResponse,
 )
@@ -24,6 +28,17 @@ def serialize_stop(stop: Stop) -> StopResponse:
         stop_name=stop.stop_name,
         latitude=float(stop.stop_lat) if stop.stop_lat is not None else None,
         longitude=float(stop.stop_lon) if stop.stop_lon is not None else None,
+    )
+
+
+def serialize_diagnostics(diagnostics) -> SearchDiagnosticsResponse:
+    return SearchDiagnosticsResponse(
+        timings_ms=SearchDiagnosticTimingsResponse(**vars(diagnostics.timings_ms)),
+        counters=SearchDiagnosticCountersResponse(**vars(diagnostics.counters)),
+        cache_statistics=SearchCacheStatisticsResponse(
+            **vars(diagnostics.cache_statistics)
+        ),
+        profiling_overhead_note=diagnostics.profiling_overhead_note,
     )
 
 
@@ -88,6 +103,7 @@ def serialize_result(
             )
         )
     timing = result.timing
+    diagnostics = result.diagnostics
     return RoutePlanResponse(
         origin=serialize_stop(origin),
         destination=serialize_stop(destination),
@@ -99,5 +115,8 @@ def serialize_result(
             search_ms=timing.search_ms,
             ranking_ms=timing.ranking_ms,
             total_ms=timing.total_ms,
+        ),
+        diagnostics=(
+            serialize_diagnostics(diagnostics) if diagnostics is not None else None
         ),
     )

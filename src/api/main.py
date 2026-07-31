@@ -103,10 +103,16 @@ async def database_error_handler(request: Request, exc: Exception) -> JSONRespon
 async def timeout_handler(
     request: Request, exc: ReliableSearchTimeout
 ) -> JSONResponse:
-    logger.warning("Route search timed out")
+    if not exc.log_context:
+        logger.warning("Route search timed out")
+    content = {"detail": "Route planning exceeded the configured timeout."}
+    if exc.diagnostics is not None:
+        from .serializers import serialize_diagnostics
+
+        content["diagnostics"] = serialize_diagnostics(exc.diagnostics).model_dump()
     return JSONResponse(
         status_code=504,
-        content={"detail": "Route planning exceeded the configured timeout."},
+        content=content,
     )
 
 
@@ -179,6 +185,7 @@ def plan_routes(
         preferences=request.routing_preferences(),
         max_extra_minutes=request.max_extra_minutes,
         timeout_seconds=request.search_timeout_seconds,
+        include_diagnostics=request.include_diagnostics,
     )
     return serialize_result(
         result,

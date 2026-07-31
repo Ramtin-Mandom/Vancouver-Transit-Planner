@@ -64,3 +64,28 @@ def test_minimum_samples_and_insufficient_data():
     assert selection.insufficient_data
     assert selection.profile is not None
     assert selection.profile.sample_count == 19
+
+
+def test_bulk_preload_preserves_fallback_and_deduplicates_keys():
+    class Database:
+        calls = 0
+
+        def bulk_profile_data(self, keys):
+            self.calls += 1
+            return {}, {
+                ("route", "R", -1): fallback_row(),
+                ("network", "*", -1): fallback_row(),
+            }
+
+        def profile(self, *args):
+            raise AssertionError("preloaded keys must not query individually")
+
+    database = Database()
+    resolver = ProfileResolver(database)
+    keys = {("R", 0, "morning_peak"), ("R", 0, "morning_peak")}
+    assert resolver.preload(keys) == 2
+    first = resolver.resolve("R", 0, timedelta(hours=8))
+    second = resolver.resolve("R", 0, timedelta(hours=8))
+    assert first is second
+    assert first.fallback_level == "route"
+    assert database.calls == 1

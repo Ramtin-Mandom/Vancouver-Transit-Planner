@@ -6,6 +6,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, timedelta
 from typing import Any
+from time import perf_counter
+from threading import RLock
 
 import psycopg
 from psycopg.rows import dict_row
@@ -56,6 +58,7 @@ class TransitDatabase:
     def __init__(self, config: DatabaseConfig | None = None) -> None:
         self.config = config or DatabaseConfig.from_environment()
         self._session: psycopg.Connection[dict[str, Any]] | None = None
+        self._search_lock = RLock()
 
     def initialize(self) -> None:
         """Open the reusable read-only session eagerly."""
@@ -249,6 +252,51 @@ class TransitDatabase:
             ).fetchall()
         return [_connection(row) for row in rows]
 
+    def bulk_departures_in_window(
+        self,
+        earliest_time: timedelta,
+        latest_time: timedelta,
+        *,
+        service_ids: set[str] | None = None,
+    ) -> list[Connection]:
+        """Load all request-relevant departures in one deterministic query."""
+        if service_ids is not None and not service_ids:
+            return []
+        query = """
+            SELECT t.trip_id, t.service_id, t.route_id, t.direction_id,
+                   r.route_short_name, r.route_long_name,
+                   current.stop_id AS from_stop_id,
+                   following.stop_id AS to_stop_id,
+                   current.arrival_time AS from_arrival_time,
+                   current.departure_time, following.arrival_time,
+                   following.departure_time AS to_departure_time,
+                   current.stop_sequence AS from_stop_sequence,
+                   following.stop_sequence AS to_stop_sequence
+            FROM transit.stop_times AS current
+            JOIN transit.trips AS t ON t.trip_id = current.trip_id
+            JOIN transit.routes AS r ON r.route_id = t.route_id
+            JOIN LATERAL (
+                SELECT stop_id, arrival_time, departure_time, stop_sequence
+                FROM transit.stop_times
+                WHERE trip_id = current.trip_id
+                  AND stop_sequence > current.stop_sequence
+                ORDER BY stop_sequence LIMIT 1
+            ) AS following ON TRUE
+            WHERE current.departure_time BETWEEN %s AND %s
+              AND (%s::text[] IS NULL OR t.service_id = ANY(%s::text[]))
+              AND COALESCE(current.pickup_type, 0) <> 1
+              AND current.departure_time IS NOT NULL
+              AND following.arrival_time IS NOT NULL
+            ORDER BY current.stop_id, current.departure_time, t.trip_id,
+                     current.stop_sequence
+        """
+        services = sorted(service_ids) if service_ids is not None else None
+        with self._connection() as connection:
+            rows = connection.execute(
+                query, (earliest_time, latest_time, services, services)
+            ).fetchall()
+        return [_connection(row) for row in rows]
+
     def trip_connections(
         self, trip_id: str, from_stop_sequence: int
     ) -> list[Connection]:
@@ -288,6 +336,51 @@ class TransitDatabase:
             ).fetchall()
         return [_connection(row) for row in rows]
 
+    def bulk_trip_connections(
+        self, trip_ids: set[str], *, batch_size: int = 2000
+    ) -> list[Connection]:
+        """Load complete connection chains in bounded trip-ID batches."""
+        identifiers = sorted(set(trip_ids))
+        rows: list[Connection] = []
+        query = """
+            WITH ordered AS MATERIALIZED (
+                SELECT stop_time.trip_id, stop_time.stop_id,
+                       stop_time.arrival_time, stop_time.departure_time,
+                       stop_time.stop_sequence,
+                       LEAD(stop_time.stop_id) OVER trip_order AS next_stop_id,
+                       LEAD(stop_time.arrival_time) OVER trip_order AS next_arrival_time,
+                       LEAD(stop_time.departure_time) OVER trip_order AS next_departure_time,
+                       LEAD(stop_time.stop_sequence) OVER trip_order AS next_stop_sequence
+                FROM transit.stop_times AS stop_time
+                WHERE stop_time.trip_id = ANY(%s::text[])
+                WINDOW trip_order AS (
+                    PARTITION BY stop_time.trip_id ORDER BY stop_time.stop_sequence
+                )
+            )
+            SELECT t.trip_id, t.service_id, t.route_id, t.direction_id,
+                   r.route_short_name, r.route_long_name,
+                   ordered.stop_id AS from_stop_id,
+                   ordered.next_stop_id AS to_stop_id,
+                   ordered.arrival_time AS from_arrival_time,
+                   ordered.departure_time,
+                   ordered.next_arrival_time AS arrival_time,
+                   ordered.next_departure_time AS to_departure_time,
+                   ordered.stop_sequence AS from_stop_sequence,
+                   ordered.next_stop_sequence AS to_stop_sequence
+            FROM ordered
+            JOIN transit.trips AS t ON t.trip_id = ordered.trip_id
+            JOIN transit.routes AS r ON r.route_id = t.route_id
+            WHERE ordered.departure_time IS NOT NULL
+              AND ordered.next_arrival_time IS NOT NULL
+            ORDER BY t.trip_id, ordered.stop_sequence
+        """
+        for offset in range(0, len(identifiers), max(1, batch_size)):
+            batch = identifiers[offset:offset + max(1, batch_size)]
+            with self._connection() as connection:
+                fetched = connection.execute(query, (batch,)).fetchall()
+            rows.extend(_connection(row) for row in fetched)
+        return rows
+
     def transfers_from(self, stop_id: str) -> list[dict[str, Any]]:
         query = """
             SELECT to_stop_id, transfer_type, min_transfer_time,
@@ -298,6 +391,59 @@ class TransitDatabase:
         """
         with self._connection() as connection:
             return list(connection.execute(query, (stop_id,)).fetchall())
+
+    def bulk_transfers(self) -> list[dict[str, Any]]:
+        """Load the small GTFS transfer-rule table once per request."""
+        query = """
+            SELECT from_stop_id, to_stop_id, transfer_type,
+                   min_transfer_time, from_trip_id, to_trip_id
+            FROM transit.transfers
+            ORDER BY from_stop_id, to_stop_id, from_trip_id, to_trip_id
+        """
+        with self._connection() as connection:
+            return list(connection.execute(query).fetchall())
+
+    def bulk_search_data(
+        self,
+        earliest_time: timedelta,
+        latest_time: timedelta,
+        *,
+        service_ids: set[str] | None,
+        trip_batch_size: int = 2000,
+        include_trip_connections: bool = True,
+    ) -> tuple[
+        list[Connection], list[dict[str, Any]], list[Connection], dict[str, float]
+    ]:
+        """Run staged transit preloading in one repeatable-read snapshot."""
+        with self._search_lock:
+            with self._connection() as connection:
+                with connection.transaction():
+                    connection.execute(
+                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+                    )
+                    started = perf_counter()
+                    departures = self.bulk_departures_in_window(
+                        earliest_time, latest_time, service_ids=service_ids
+                    )
+                    departure_ms = (perf_counter() - started) * 1000
+                    started = perf_counter()
+                    transfers = self.bulk_transfers()
+                    transfer_ms = (perf_counter() - started) * 1000
+                    if include_trip_connections:
+                        started = perf_counter()
+                        connections = self.bulk_trip_connections(
+                            {item.trip_id for item in departures},
+                            batch_size=trip_batch_size,
+                        )
+                        connection_ms = (perf_counter() - started) * 1000
+                    else:
+                        connections = []
+                        connection_ms = 0.0
+        return departures, transfers, connections, {
+            "departures_preload_ms": departure_ms,
+            "transfers_preload_ms": transfer_ms,
+            "trip_connections_preload_ms": connection_ms,
+        }
 
     def calendar_rule(self, service_id: str) -> dict[str, Any] | None:
         query = """
