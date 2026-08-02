@@ -184,7 +184,7 @@ def test_stop_search_limit_is_validated(client, limit):
 def test_successful_route_response_preserves_ranked_order(client, api_services):
     response = client.post("/routes/plan", json=valid_request())
     assert response.status_code == 200
-    assert api_services.planner.calls[-1][1]["algorithm"] == "astar"
+    assert api_services.planner.calls[-1][1]["algorithm"] == "mc_raptor"
     body = response.json()
     assert [item["legs"][0]["trip_id"] for item in body["alternatives"]] == [
         "BEST",
@@ -220,6 +220,24 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
         },
     ]
     assert body["diagnostics"] is None
+
+
+@pytest.mark.parametrize("algorithm", ["baseline", "dijkstra", "astar", "mc_raptor"])
+def test_route_request_accepts_and_dispatches_each_algorithm(
+    client, api_services, algorithm
+):
+    response = client.post(
+        "/routes/plan", json=valid_request(algorithm=algorithm)
+    )
+    assert response.status_code == 200
+    assert api_services.planner.calls[-1][1]["algorithm"] == algorithm
+
+
+def test_route_request_rejects_unknown_algorithm(client):
+    response = client.post(
+        "/routes/plan", json=valid_request(algorithm="raptor")
+    )
+    assert response.status_code == 422
 
 
 def test_diagnostics_are_returned_only_when_requested(client, api_services):

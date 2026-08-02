@@ -126,7 +126,7 @@ class ParetoTransitSearch:
         search_horizon_minutes: int = DEFAULT_SEARCH_HORIZON_MINUTES,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         include_diagnostics: bool = False,
-        trip_loading_mode: str = "eager",
+        trip_loading_mode: str = "frontier",
     ) -> ReliableSearchResult:
         if limit is not None and limit < 1:
             raise ValueError("candidate limit must be positive")

@@ -1,4 +1,4 @@
-"""Reproducible warmed baseline-versus-A* routing comparison."""
+"""Reproducible warmed three-algorithm routing comparison."""
 
 from __future__ import annotations
 
@@ -55,6 +55,13 @@ def measurement(result, samples):
         "stops_expanded": counters.stops_expanded,
         "labels_expanded": counters.queue_pops - counters.stale_labels_skipped,
         "queue_pops": counters.queue_pops,
+        "rounds": counters.rounds_executed,
+        "route_scans": counters.route_pattern_scans,
+        "trips_considered": counters.trips_considered or counters.trips_examined,
+        "connections_examined": (
+            counters.stop_time_entries_scanned or counters.connections_examined
+        ),
+        "labels_created": counters.labels_created,
         "trips_loaded": cache.unique_trips_loaded,
         "database_query_count": query_count,
     }
@@ -67,6 +74,7 @@ def main() -> None:
     parser.add_argument("--date", type=date.fromisoformat, default=date(2026, 7, 31))
     parser.add_argument("--departure", type=parse_gtfs_time, default=parse_gtfs_time("08:00:00"))
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument("--max-extra-minutes", type=int, default=10)
     parser.add_argument("--trip-loading-mode", choices=("frontier", "eager"), default="frontier")
     args = parser.parse_args()
 
@@ -75,13 +83,13 @@ def main() -> None:
     planner = TransitPlanner(transit)
     try:
         results = {}
-        for algorithm in ("baseline", "astar"):
+        for algorithm in ("baseline", "astar", "mc_raptor"):
             # One unmeasured warm-up followed by identical measured requests.
             planner.get_ranked_route_result(
                 args.origin, args.destination, args.date, args.departure,
                 ProfileResolver(reliability), algorithm=algorithm,
                 trip_loading_mode=args.trip_loading_mode, include_diagnostics=True,
-                timeout_seconds=120,
+                timeout_seconds=120, max_extra_minutes=args.max_extra_minutes,
             )
             samples = [
                 planner.get_ranked_route_result(
@@ -89,14 +97,15 @@ def main() -> None:
                     ProfileResolver(reliability), algorithm=algorithm,
                     trip_loading_mode=args.trip_loading_mode,
                     include_diagnostics=True, timeout_seconds=120,
+                    max_extra_minutes=args.max_extra_minutes,
                 )
                 for _ in range(max(1, args.runs))
             ]
             results[algorithm] = measurement(samples[-1], samples)
-        results["signatures_identical"] = (
-            results["baseline"]["route_signatures"]
-            == results["astar"]["route_signatures"]
-        )
+        results["signatures_identical"] = len({
+            json.dumps(results[name]["route_signatures"], sort_keys=True)
+            for name in ("baseline", "astar", "mc_raptor")
+        }) == 1
         print(json.dumps(results, indent=2))
         if not results["signatures_identical"]:
             raise SystemExit(1)

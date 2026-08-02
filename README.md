@@ -727,19 +727,27 @@ The legacy mode is retained by the benchmark adapter only.
 ### Baseline and exact A* routing
 
 The API request's optional `algorithm` field selects `baseline` (or its
-`dijkstra` alias) or `astar`. It defaults to `astar`, so existing clients can
-omit it. For example, include `"algorithm": "baseline"` in `POST /routes/plan`
-to compare against the original ordering. A* uses only
+`dijkstra` alias), `astar`, or `mc_raptor`. It defaults to `mc_raptor`, so
+clients can omit it. Include `"algorithm": "baseline"` or
+`"algorithm": "astar"` in `POST /routes/plan` to select either previous
+implementation explicitly. A* uses only
 straight-line Haversine travel time at the optimistic speed configured by
 `ROUTING_MAX_TRANSIT_SPEED_KMH` (default `120`). Missing or invalid coordinates
 produce a zero heuristic. The heuristic affects heap ordering only; Pareto
 dominance, reliability, transfers, reconstruction, and final ranking are
 shared with the baseline.
 
+Reliability-aware McRAPTOR uses bounded transit-boarding rounds and exact
+ordered-stop route patterns. Each round collects patterns serving marked
+stops, scans each collected pattern once, and retains Pareto labels by
+scheduled arrival and negative-log reliability cost. Walking transfers do not
+consume a boarding round. Reliability is resolved once per boarded transit
+leg and combined multiplicatively as `exp(-sum(reliability_cost))`.
+
 For a one-command warmed comparison using identical requests:
 
 ```powershell
-py -3.10 -m scripts.benchmark_astar --runs 3 --trip-loading-mode frontier
+py -3.10 -m scripts.benchmark_routing_algorithms --runs 3 --max-extra-minutes 10
 ```
 
 Override `--origin`, `--destination`, `--date`, and `--departure` to reproduce
