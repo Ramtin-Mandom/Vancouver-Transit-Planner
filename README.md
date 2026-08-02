@@ -724,6 +724,28 @@ The eager mode remains available internally for direct comparison by passing
 `trip_loading_mode="eager"`. It is not exposed as a normal API request field.
 The legacy mode is retained by the benchmark adapter only.
 
+### Baseline and exact A* routing
+
+The API request's optional `algorithm` field selects `baseline` (or its
+`dijkstra` alias) or `astar`. It defaults to `astar`, so existing clients can
+omit it. For example, include `"algorithm": "baseline"` in `POST /routes/plan`
+to compare against the original ordering. A* uses only
+straight-line Haversine travel time at the optimistic speed configured by
+`ROUTING_MAX_TRANSIT_SPEED_KMH` (default `120`). Missing or invalid coordinates
+produce a zero heuristic. The heuristic affects heap ordering only; Pareto
+dominance, reliability, transfers, reconstruction, and final ranking are
+shared with the baseline.
+
+For a one-command warmed comparison using identical requests:
+
+```powershell
+py -3.10 -m scripts.benchmark_astar --runs 3 --trip-loading-mode frontier
+```
+
+Override `--origin`, `--destination`, `--date`, and `--departure` to reproduce
+direct, transfer, cross-region, unreachable, overnight, and multi-alternative
+cases. The command exits nonzero if normalized route signatures differ.
+
 ### Measured results
 
 The benchmark alternates execution order across trials to reduce PostgreSQL

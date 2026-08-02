@@ -221,6 +221,7 @@ class TransitPlanner:
         *,
         route_number: int = 5,
         preferences: "RoutingPreferences | None" = None,
+        algorithm: str = "astar",
         **bounds: Any,
     ) -> list[ReliableAlternative]:
         """Return up to ``route_number`` reliable routes, best first."""
@@ -233,6 +234,7 @@ class TransitPlanner:
                 resolver,
                 route_number=route_number,
                 preferences=preferences,
+                algorithm=algorithm,
                 **bounds,
             ).alternatives
         )
@@ -247,15 +249,29 @@ class TransitPlanner:
         *,
         route_number: int = 5,
         preferences: "RoutingPreferences | None" = None,
+        algorithm: str = "astar",
         **bounds: Any,
     ) -> ReliableSearchResult:
         """Return ranked routes with search timing and diagnostics."""
         from .reliable import ParetoTransitSearch
         from .route_results import get_ranked_route_result
 
-        search = ParetoTransitSearch(
-            self.database, self.calendar, resolver
-        )
+        algorithm = str(algorithm).strip().lower()
+        # Keep the planner/API on the documented optimized loading path. The
+        # search class still exposes eager mode for controlled comparisons.
+        bounds.setdefault("trip_loading_mode", "frontier")
+        if algorithm in {"baseline", "dijkstra"}:
+            search = ParetoTransitSearch(self.database, self.calendar, resolver)
+        elif algorithm == "astar":
+            from .astar import AStarParetoTransitSearch
+
+            search = AStarParetoTransitSearch(
+                self.database, self.calendar, resolver
+            )
+        else:
+            raise ValueError(
+                "routing algorithm must be 'baseline', 'dijkstra', or 'astar'"
+            )
         return get_ranked_route_result(
             search,
             origin_stop_id,

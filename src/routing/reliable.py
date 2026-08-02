@@ -89,6 +89,30 @@ class ParetoTransitSearch:
         self.calendar = calendar
         self.resolver = resolver
 
+    @property
+    def algorithm_name(self) -> str:
+        return "baseline"
+
+    def _prepare_queue_ordering(
+        self,
+        origin: Stop,
+        destination: Stop,
+        stop_ids: set[str],
+    ) -> None:
+        """Prepare request-local queue ordering state.
+
+        The baseline deliberately does nothing.  A* overrides this hook; the
+        label lifecycle, dominance rules, reconstruction, and ranking remain
+        owned by this proven implementation.
+        """
+
+    def _queue_priority(self, label: _Label) -> timedelta:
+        """Return the heap's primary key (scheduled arrival for baseline)."""
+        return label.arrival
+
+    def _queue_ordering_statistics(self) -> tuple[int, int]:
+        return (0, 0)
+
     def search(
         self,
         origin_stop_id: str,
@@ -124,6 +148,8 @@ class ParetoTransitSearch:
             vars(SearchDiagnosticCounters()).copy()
             if include_diagnostics else {}
         )
+        if include_diagnostics:
+            counters["algorithm"] = self.algorithm_name
         caches = (
             vars(SearchCacheStatistics()).copy()
             if include_diagnostics else {}
@@ -307,6 +333,23 @@ class ParetoTransitSearch:
                 caches["request_index_memory_estimate_bytes"] = (
                     data_index.memory_estimate_bytes
                 )
+        coordinate_stop_ids = {origin_stop_id, destination_stop_id}
+        if data_index is not None:
+            coordinate_stop_ids.update(
+                connection.from_stop_id for connection in loaded_departures
+            )
+            coordinate_stop_ids.update(
+                connection.to_stop_id for connection in loaded_departures
+            )
+            coordinate_stop_ids.update(
+                transfer["from_stop_id"] for transfer in loaded_transfers
+                if transfer.get("from_stop_id") is not None
+            )
+            coordinate_stop_ids.update(
+                transfer["to_stop_id"] for transfer in loaded_transfers
+                if transfer.get("to_stop_id") is not None
+            )
+        self._prepare_queue_ordering(origin, destination, coordinate_stop_ids)
         loaded_at = perf_counter()
 
         def departures(stop_id: str) -> list[Connection]:
@@ -426,9 +469,15 @@ class ParetoTransitSearch:
         labels: dict[tuple[str, str | None], list[_Label]] = {
             (origin_stop_id, None): [initial]
         }
-        queue: list[tuple[timedelta, float, int, int, _Label]] = []
+        queue: list[tuple[timedelta, timedelta, float, int, int, _Label]] = []
         serial = count()
-        heapq.heappush(queue, (initial.arrival, 0.0, 0, next(serial), initial))
+        heapq.heappush(
+            queue,
+            (
+                self._queue_priority(initial), initial.arrival, 0.0, 0,
+                next(serial), initial,
+            ),
+        )
         if include_diagnostics:
             counters.update(queue_pushes=1, labels_created=1, labels_accepted=1,
                             maximum_queue_size=1, maximum_labels_in_bucket=1)
@@ -474,8 +523,10 @@ class ParetoTransitSearch:
                 )
             heapq.heappush(
                 queue,
-                (label.arrival, label.reliability_cost, label.transfers,
-                 next(serial), label),
+                (
+                    self._queue_priority(label), label.arrival,
+                    label.reliability_cost, label.transfers, next(serial), label,
+                ),
             )
             if include_diagnostics:
                 counters["labels_pruned"] += len(bucket) - len(survivors)
@@ -488,16 +539,16 @@ class ParetoTransitSearch:
         while queue:
             check_deadline()
             queue_started = perf_counter() if include_diagnostics else 0.0
-            _, _, _, _, label = heapq.heappop(queue)
+            priority, _, _, _, _, label = heapq.heappop(queue)
             if include_diagnostics:
                 counters["queue_pops"] += 1
                 timings["queue_processing_ms"] += (perf_counter() - queue_started) * 1000
-            if arrival_cutoff is not None and label.arrival > arrival_cutoff:
-                break
             if label not in labels.get((label.stop_id, label.current_trip_id), ()):
                 if include_diagnostics:
                     counters["stale_labels_skipped"] += 1
                 continue
+            if arrival_cutoff is not None and priority > arrival_cutoff:
+                break
             if label.stop_id == destination_stop_id:
                 destinations.append(label)
                 if include_diagnostics:
@@ -634,6 +685,10 @@ class ParetoTransitSearch:
 
         searched_at = perf_counter()
         if include_diagnostics:
+            (
+                counters["unique_heuristic_calculations"],
+                counters["heuristic_cache_hits"],
+            ) = self._queue_ordering_statistics()
             timings["search_cpu_ms"] = (searched_at - loaded_at) * 1000
             if frontier_loader is not None:
                 timings["frontier_trip_query_ms"] = frontier_loader.query_ms

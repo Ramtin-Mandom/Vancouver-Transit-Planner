@@ -121,6 +121,17 @@ class TransitDatabase:
             rows = connection.execute(query, (sorted(stop_ids),)).fetchall()
         return {row["stop_id"]: _stop(row) for row in rows}
 
+    def all_stop_coordinates(self) -> dict[str, Stop]:
+        """Load the small stop-coordinate set once for legacy search paths."""
+        query = """
+            SELECT stop_id, stop_name, stop_code, stop_lat, stop_lon
+            FROM transit.stops
+            ORDER BY stop_id
+        """
+        with self._connection() as connection:
+            rows = connection.execute(query).fetchall()
+        return {row["stop_id"]: _stop(row) for row in rows}
+
     def search_stops(self, stop_name: str, limit: int = 20) -> list[Stop]:
         query = """
             SELECT stop.stop_id, stop.stop_name, stop.stop_code,
