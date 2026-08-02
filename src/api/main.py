@@ -181,6 +181,7 @@ def plan_routes(
         request.service_date,
         departure_time,
         resolver,
+        algorithm=request.algorithm,
         route_number=request.route_number,
         preferences=request.routing_preferences(),
         max_extra_minutes=request.max_extra_minutes,

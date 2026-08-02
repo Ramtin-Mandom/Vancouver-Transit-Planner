@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, timedelta
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -102,6 +103,7 @@ class SearchDiagnosticTimingsResponse(ApiModel):
 
 
 class SearchDiagnosticCountersResponse(ApiModel):
+    algorithm: str = "baseline"
     candidate_trip_ids_from_frontier: int = 0
     unique_frontier_trips_requested: int = 0
     unique_frontier_trips_loaded: int = 0
@@ -137,6 +139,8 @@ class SearchDiagnosticCountersResponse(ApiModel):
     destination_labels_found: int = 0
     alternatives_reconstructed: int = 0
     alternatives_returned: int = 0
+    unique_heuristic_calculations: int = 0
+    heuristic_cache_hits: int = 0
 
 
 class SearchCacheStatisticsResponse(ApiModel):
@@ -189,6 +193,7 @@ class RoutePlanRequest(ApiModel):
     destination_stop_id: str
     service_date: date
     departure_time: str
+    algorithm: Literal["baseline", "dijkstra", "astar"] = "astar"
     route_number: int = Field(default=5, ge=1, le=5)
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)

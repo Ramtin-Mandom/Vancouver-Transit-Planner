@@ -184,6 +184,7 @@ def test_stop_search_limit_is_validated(client, limit):
 def test_successful_route_response_preserves_ranked_order(client, api_services):
     response = client.post("/routes/plan", json=valid_request())
     assert response.status_code == 200
+    assert api_services.planner.calls[-1][1]["algorithm"] == "astar"
     body = response.json()
     assert [item["legs"][0]["trip_id"] for item in body["alternatives"]] == [
         "BEST",

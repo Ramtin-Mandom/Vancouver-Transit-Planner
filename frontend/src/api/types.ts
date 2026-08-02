@@ -62,6 +62,7 @@ export interface RoutePlanRequest {
   destination_stop_id: string;
   service_date: string;
   departure_time: string;
+  algorithm?: "baseline" | "dijkstra" | "astar";
   route_number: number;
   minimum_samples: number;
   max_extra_minutes: number;

@@ -127,6 +127,7 @@ class SearchDiagnosticTimings:
 
 @dataclass(frozen=True)
 class SearchDiagnosticCounters:
+    algorithm: str = "baseline"
     candidate_trip_ids_from_frontier: int = 0
     unique_frontier_trips_requested: int = 0
     unique_frontier_trips_loaded: int = 0
@@ -162,6 +163,8 @@ class SearchDiagnosticCounters:
     destination_labels_found: int = 0
     alternatives_reconstructed: int = 0
     alternatives_returned: int = 0
+    unique_heuristic_calculations: int = 0
+    heuristic_cache_hits: int = 0
 
 
 @dataclass(frozen=True)
