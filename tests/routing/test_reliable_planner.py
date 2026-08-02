@@ -199,11 +199,12 @@ def test_profiled_search_reports_consistent_diagnostics_without_changing_routes(
     }
     planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips))
     plain = planner.plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9})
+        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
+        algorithm="baseline",
     )
     profiled = planner.plan_reliable_alternatives(
         "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-        include_diagnostics=True,
+        include_diagnostics=True, algorithm="baseline",
     )
     assert [item.itinerary for item in plain.alternatives] == [
         item.itinerary for item in profiled.alternatives
@@ -236,7 +237,7 @@ def test_timeout_carries_partial_diagnostics():
     with pytest.raises(ReliableSearchTimeout) as caught:
         TransitPlanner(FakeDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
             "A", "D", MONDAY, at(7, 59), SlowResolver({("R", "D"): .9}),
-            timeout_seconds=.001, include_diagnostics=True,
+            timeout_seconds=.001, include_diagnostics=True, algorithm="baseline",
         )
     assert caught.value.diagnostics is not None
     assert caught.value.diagnostics.timings_ms.measured_search_ms >= 0
@@ -277,7 +278,7 @@ def test_bulk_index_path_executes_no_hot_loop_repository_queries():
     database = BulkDatabase()
     result = TransitPlanner(database).plan_reliable_alternatives(
         "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-        include_diagnostics=True,
+        include_diagnostics=True, algorithm="baseline",
     )
     assert database.bulk_counts == {"departures": 1, "transfers": 1, "trips": 1}
     assert result.diagnostics.cache_statistics.unexpected_queries_during_search == 0
@@ -307,7 +308,7 @@ def test_nonboardable_departure_does_not_trigger_frontier_trip_loading():
     database = BulkDatabase(stops("A", "D"), trips)
     result = TransitPlanner(database).plan_reliable_alternatives(
         "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-        include_diagnostics=True,
+        include_diagnostics=True, algorithm="baseline",
     )
     assert not result.alternatives
     assert database.trip_batches == 0
@@ -333,7 +334,7 @@ def test_timeout_diagnostics_include_completed_frontier_batch():
     with pytest.raises(ReliableSearchTimeout) as caught:
         TransitPlanner(SlowBulkDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
             "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-            timeout_seconds=.001, include_diagnostics=True,
+            timeout_seconds=.001, include_diagnostics=True, algorithm="baseline",
         )
     diagnostics = caught.value.diagnostics
     assert diagnostics.counters.frontier_trip_batch_query_count == 1

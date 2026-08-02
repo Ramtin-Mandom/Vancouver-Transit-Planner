@@ -92,6 +92,7 @@ class SearchTiming:
 
 @dataclass(frozen=True)
 class SearchDiagnosticTimings:
+    index_building_ms: float = 0.0
     initial_preload_ms: float = 0.0
     eager_trip_preload_ms: float = 0.0
     frontier_trip_loading_ms: float = 0.0
@@ -165,6 +166,18 @@ class SearchDiagnosticCounters:
     alternatives_returned: int = 0
     unique_heuristic_calculations: int = 0
     heuristic_cache_hits: int = 0
+    rounds_executed: int = 0
+    route_patterns_collected: int = 0
+    route_pattern_scans: int = 0
+    unique_routes_scanned_per_round: tuple[int, ...] = ()
+    trips_considered: int = 0
+    trips_boarded: int = 0
+    stop_time_entries_scanned: int = 0
+    labels_inserted: int = 0
+    maximum_pareto_bag_size: int = 0
+    marked_stops_per_round: tuple[int, ...] = ()
+    transfer_edges_relaxed: int = 0
+    candidate_itineraries: int = 0
 
 
 @dataclass(frozen=True)

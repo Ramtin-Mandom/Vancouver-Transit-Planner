@@ -221,7 +221,7 @@ class TransitPlanner:
         *,
         route_number: int = 5,
         preferences: "RoutingPreferences | None" = None,
-        algorithm: str = "astar",
+        algorithm: str = "mc_raptor",
         **bounds: Any,
     ) -> list[ReliableAlternative]:
         """Return up to ``route_number`` reliable routes, best first."""
@@ -249,7 +249,7 @@ class TransitPlanner:
         *,
         route_number: int = 5,
         preferences: "RoutingPreferences | None" = None,
-        algorithm: str = "astar",
+        algorithm: str = "mc_raptor",
         **bounds: Any,
     ) -> ReliableSearchResult:
         """Return ranked routes with search timing and diagnostics."""
@@ -268,9 +268,16 @@ class TransitPlanner:
             search = AStarParetoTransitSearch(
                 self.database, self.calendar, resolver
             )
+        elif algorithm == "mc_raptor":
+            from .mc_raptor import McRaptorTransitSearch
+
+            search = McRaptorTransitSearch(
+                self.database, self.calendar, resolver
+            )
         else:
             raise ValueError(
-                "routing algorithm must be 'baseline', 'dijkstra', or 'astar'"
+                "routing algorithm must be 'baseline', 'dijkstra', 'astar', "
+                "or 'mc_raptor'"
             )
         return get_ranked_route_result(
             search,

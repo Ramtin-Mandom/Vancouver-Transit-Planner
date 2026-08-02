@@ -69,6 +69,7 @@ class SearchTimingResponse(ApiModel):
 
 
 class SearchDiagnosticTimingsResponse(ApiModel):
+    index_building_ms: float = 0.0
     initial_preload_ms: float = 0.0
     eager_trip_preload_ms: float = 0.0
     frontier_trip_loading_ms: float = 0.0
@@ -141,6 +142,18 @@ class SearchDiagnosticCountersResponse(ApiModel):
     alternatives_returned: int = 0
     unique_heuristic_calculations: int = 0
     heuristic_cache_hits: int = 0
+    rounds_executed: int = 0
+    route_patterns_collected: int = 0
+    route_pattern_scans: int = 0
+    unique_routes_scanned_per_round: tuple[int, ...] = ()
+    trips_considered: int = 0
+    trips_boarded: int = 0
+    stop_time_entries_scanned: int = 0
+    labels_inserted: int = 0
+    maximum_pareto_bag_size: int = 0
+    marked_stops_per_round: tuple[int, ...] = ()
+    transfer_edges_relaxed: int = 0
+    candidate_itineraries: int = 0
 
 
 class SearchCacheStatisticsResponse(ApiModel):
@@ -193,7 +206,7 @@ class RoutePlanRequest(ApiModel):
     destination_stop_id: str
     service_date: date
     departure_time: str
-    algorithm: Literal["baseline", "dijkstra", "astar"] = "astar"
+    algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
     route_number: int = Field(default=5, ge=1, le=5)
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)
