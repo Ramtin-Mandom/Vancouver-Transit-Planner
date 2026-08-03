@@ -4,6 +4,7 @@ import pytest
 
 from src.reliability.models import ReliabilityProfile
 from src.reliability.profiles import FALLBACKS, ProfileResolver
+from src.routing.cache import RoutingCacheManager
 
 
 def profile(samples=20):
@@ -88,4 +89,29 @@ def test_bulk_preload_preserves_fallback_and_deduplicates_keys():
     second = resolver.resolve("R", 0, timedelta(hours=8))
     assert first is second
     assert first.fallback_level == "route"
+    assert database.calls == 1
+
+
+def test_shared_raw_profiles_do_not_share_minimum_sample_selection():
+    class Database:
+        calls = 0
+
+        def bulk_profile_data(self, keys):
+            self.calls += 1
+            key = next(iter(keys))
+            return {key: profile(samples=20)}, {}
+
+    database = Database()
+    shared = RoutingCacheManager()
+    key = {("R", 0, "morning_peak")}
+    permissive = ProfileResolver(
+        database, minimum_samples=10, shared_cache=shared, profile_version="p1"
+    )
+    strict = ProfileResolver(
+        database, minimum_samples=30, shared_cache=shared, profile_version="p1"
+    )
+    permissive.preload(key)
+    strict.preload(key)
+    assert not permissive.resolve("R", 0, timedelta(hours=8)).insufficient_data
+    assert strict.resolve("R", 0, timedelta(hours=8)).insufficient_data
     assert database.calls == 1

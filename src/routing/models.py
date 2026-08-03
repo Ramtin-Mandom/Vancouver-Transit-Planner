@@ -92,6 +92,14 @@ class SearchTiming:
 
 @dataclass(frozen=True)
 class SearchDiagnosticTimings:
+    gtfs_version_lookup_ms: float = 0.0
+    static_snapshot_build_ms: float = 0.0
+    daily_departure_index_build_ms: float = 0.0
+    daily_departure_query_ms: float = 0.0
+    daily_departure_grouping_ms: float = 0.0
+    daily_departure_sorting_ms: float = 0.0
+    skytrain_preload_ms: float = 0.0
+    reliability_snapshot_build_ms: float = 0.0
     index_building_ms: float = 0.0
     initial_preload_ms: float = 0.0
     eager_trip_preload_ms: float = 0.0
@@ -182,6 +190,22 @@ class SearchDiagnosticCounters:
 
 @dataclass(frozen=True)
 class SearchCacheStatistics:
+    first_request_cache_hits: int = 0
+    first_request_cache_misses: int = 0
+    single_flight_wait_count: int = 0
+    trip_request_cache_hits: int = 0
+    trip_shared_cache_hits: int = 0
+    trip_shared_cache_misses: int = 0
+    trip_negative_cache_hits: int = 0
+    daily_index_hits: int = 0
+    daily_index_misses: int = 0
+    reliability_cache_hits: int = 0
+    reliability_cache_misses: int = 0
+    heuristic_cache_hits: int = 0
+    heuristic_cache_misses: int = 0
+    response_cache_hit: bool = False
+    cache_evictions: int = 0
+    shared_cache_memory_estimate_bytes: int = 0
     bulk_departure_query_count: int = 0
     bulk_transfer_query_count: int = 0
     bulk_trip_query_count: int = 0

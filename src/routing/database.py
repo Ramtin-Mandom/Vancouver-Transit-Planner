@@ -93,10 +93,14 @@ class TransitDatabase:
 
     @contextmanager
     def _connection(self) -> Iterator[psycopg.Connection[dict[str, Any]]]:
-        self.initialize()
-        if self._session is None:  # pragma: no cover - initialize guarantees it
-            raise RuntimeError("PostgreSQL session initialization failed")
-        yield self._session
+        # psycopg connections are not safe for overlapping command streams.
+        # Keep database serialization separate from cache locks: callers never
+        # hold a cache lock while entering this context.
+        with self._search_lock:
+            self.initialize()
+            if self._session is None:  # pragma: no cover - initialize guarantees it
+                raise RuntimeError("PostgreSQL session initialization failed")
+            yield self._session
 
     def find_stop(self, stop_id: str) -> Stop | None:
         query = """
@@ -131,6 +135,32 @@ class TransitDatabase:
         with self._connection() as connection:
             rows = connection.execute(query).fetchall()
         return {row["stop_id"]: _stop(row) for row in rows}
+
+    def gtfs_version(self) -> str:
+        """Return the active, transactionally imported feed identifier."""
+        query = """
+            SELECT COALESCE(
+                MAX(feed_version),
+                CONCAT(MAX(feed_start_date)::text, ':', MAX(feed_end_date)::text),
+                'empty-feed'
+            ) AS version
+            FROM transit.feed_info
+        """
+        with self._connection() as connection:
+            row = connection.execute(query).fetchone()
+        return str(row["version"])
+
+    def bulk_daily_departures(
+        self, *, service_ids: set[str] | None = None
+    ) -> list[Connection]:
+        """Load all departures for active services, preserving >24:00 intervals."""
+        if service_ids is not None and not service_ids:
+            return []
+        # PostgreSQL intervals and the connection mapper intentionally retain
+        # the complete GTFS service-day offset; no time-of-day cast is used.
+        return self.bulk_departures_in_window(
+            timedelta(0), None, service_ids=service_ids
+        )
 
     def search_stops(self, stop_name: str, limit: int = 20) -> list[Stop]:
         query = """
@@ -266,7 +296,7 @@ class TransitDatabase:
     def bulk_departures_in_window(
         self,
         earliest_time: timedelta,
-        latest_time: timedelta,
+        latest_time: timedelta | None,
         *,
         service_ids: set[str] | None = None,
     ) -> list[Connection]:
@@ -293,7 +323,8 @@ class TransitDatabase:
                   AND stop_sequence > current.stop_sequence
                 ORDER BY stop_sequence LIMIT 1
             ) AS following ON TRUE
-            WHERE current.departure_time BETWEEN %s AND %s
+            WHERE current.departure_time >= %s
+              AND (%s::interval IS NULL OR current.departure_time <= %s::interval)
               AND (%s::text[] IS NULL OR t.service_id = ANY(%s::text[]))
               AND COALESCE(current.pickup_type, 0) <> 1
               AND current.departure_time IS NOT NULL
@@ -304,7 +335,7 @@ class TransitDatabase:
         services = sorted(service_ids) if service_ids is not None else None
         with self._connection() as connection:
             rows = connection.execute(
-                query, (earliest_time, latest_time, services, services)
+                query, (earliest_time, latest_time, latest_time, services, services)
             ).fetchall()
         return [_connection(row) for row in rows]
 
@@ -500,13 +531,39 @@ class TransitDatabase:
                         WHEN 7 THEN c.sunday
                     END
                )
-            ORDER BY c.service_id
+            UNION
+            SELECT added.service_id
+            FROM transit.calendar_dates AS added
+            WHERE added.service_date = %s
+              AND added.exception_type = 1
+            ORDER BY service_id
         """
         with self._connection() as connection:
             rows = connection.execute(
-                query, (service_date, service_date, service_date)
+                query, (service_date, service_date, service_date, service_date)
             ).fetchall()
         return {row["service_id"] for row in rows}
+
+    def active_rail_trip_ids(
+        self, service_ids: set[str]
+    ) -> tuple[int, set[str]]:
+        """Return active metro trips using the GTFS subway/metro route type 1."""
+        if not service_ids:
+            return 0, set()
+        query = """
+            SELECT trip.trip_id, trip.route_id
+            FROM transit.trips AS trip
+            JOIN transit.routes AS route ON route.route_id = trip.route_id
+            WHERE route.route_type = 1
+              AND trip.service_id = ANY(%s::text[])
+            ORDER BY trip.route_id, trip.trip_id
+        """
+        with self._connection() as connection:
+            rows = connection.execute(query, (sorted(service_ids),)).fetchall()
+        return (
+            len({row["route_id"] for row in rows}),
+            {row["trip_id"] for row in rows},
+        )
 
     def integration_case_rows(self, limit: int) -> list[dict[str, Any]]:
         """Select deterministic real journeys and one valid service date each."""

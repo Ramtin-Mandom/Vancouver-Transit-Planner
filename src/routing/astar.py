@@ -9,6 +9,7 @@ from typing import Any
 
 from .models import Stop
 from .reliable import ParetoTransitSearch, _Label
+from .cache import RoutingCacheManager
 
 EARTH_RADIUS_KM = 6371.0088
 DEFAULT_MAX_POSSIBLE_TRANSIT_SPEED_KMH = 120.0
@@ -87,8 +88,13 @@ class AStarParetoTransitSearch(ParetoTransitSearch):
         resolver: Any,
         *,
         max_speed_kmh: float | None = None,
+        cache_manager: RoutingCacheManager | None = None,
+        gtfs_version: str = "unknown",
     ) -> None:
-        super().__init__(database, calendar, resolver)
+        super().__init__(database, calendar, resolver, cache_manager=cache_manager,
+                         gtfs_version=gtfs_version)
+        self.cache_manager = cache_manager
+        self.gtfs_version = gtfs_version
         self.max_speed_kmh = (
             configured_max_transit_speed_kmh()
             if max_speed_kmh is None
@@ -98,6 +104,8 @@ class AStarParetoTransitSearch(ParetoTransitSearch):
         self._stops: dict[str, Stop] = {}
         self._heuristic_cache: dict[str, float] = {}
         self._heuristic_cache_hits = 0
+        self._shared_heuristic_hits = 0
+        self._shared_heuristic_misses = 0
 
     @property
     def algorithm_name(self) -> str:
@@ -112,8 +120,18 @@ class AStarParetoTransitSearch(ParetoTransitSearch):
         self._destination = destination
         self._heuristic_cache = {}
         self._heuristic_cache_hits = 0
+        self._shared_heuristic_hits = 0
+        self._shared_heuristic_misses = 0
+        shared_stops = None
+        if self.cache_manager is not None:
+            found, snapshot = self.cache_manager.static_snapshots.get(self.gtfs_version)
+            if found and snapshot is not None:
+                shared_stops = snapshot[0]
         bulk_lookup = getattr(self.database, "find_stops", None)
-        self._stops = bulk_lookup(stop_ids) if callable(bulk_lookup) else {}
+        self._stops = (
+            dict(shared_stops) if shared_stops is not None
+            else (bulk_lookup(stop_ids) if callable(bulk_lookup) else {})
+        )
         # Legacy repositories cannot expose the departure-window index.  They
         # may still provide one bulk coordinate snapshot; never fall back to a
         # per-label lookup.
@@ -127,12 +145,26 @@ class AStarParetoTransitSearch(ParetoTransitSearch):
         if stop_id in self._heuristic_cache:
             self._heuristic_cache_hits += 1
             return self._heuristic_cache[stop_id]
+        shared_key = (
+            self.gtfs_version,
+            self._destination.stop_id if self._destination is not None else "",
+            stop_id,
+        )
+        if self.cache_manager is not None:
+            found, cached = self.cache_manager.heuristics.get(shared_key)
+            if found and cached is not None:
+                self._shared_heuristic_hits += 1
+                self._heuristic_cache[stop_id] = cached
+                return cached
+            self._shared_heuristic_misses += 1
         value = heuristic_seconds(
             self._stops.get(stop_id),
             self._destination,
             max_speed_kmh=self.max_speed_kmh,
         )
         self._heuristic_cache[stop_id] = value
+        if self.cache_manager is not None:
+            self.cache_manager.heuristics.put(shared_key, value)
         return value
 
     def _queue_priority(self, label: _Label) -> timedelta:

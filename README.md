@@ -807,3 +807,279 @@ loop query prevention, timeout diagnostics, and API compatibility. Run:
 python -m pytest -m "not integration" -v
 python -m pytest -m integration -s
 ```
+
+### Routing cache architecture, cold-start optimization, and configuration
+
+The routing cache work was completed in two stages: first, bounded shared caches
+were added to reuse slowly changing transit data across requests; second, the
+measured cold-cache work was moved into a configurable startup coordinator so
+the first user request no longer pays the full daily-index construction cost.
+Routing, Pareto dominance, A* queue semantics, reliability scoring,
+reconstruction, and final ranking were not changed.
+
+#### Application-scoped cache manager
+
+FastAPI creates one `RoutingCacheManager` during application startup and injects
+that same manager into route searches and reliability resolvers. It owns all
+process-wide entries; there are no scattered unbounded module dictionaries.
+The implementation uses standard-library `OrderedDict`, `RLock`, and `Event`
+primitives to provide:
+
+- bounded LRU eviction and per-cache TTLs;
+- thread-safe lookup and publication;
+- immutable statistics snapshots;
+- hit, miss, load, eviction, and negative-hit counters;
+- approximate process-cache memory reporting;
+- explicit cache clearing for tests;
+- explicit GTFS- and profile-version invalidation;
+- per-key single-flight coordination without holding a cache lock during SQL;
+- failure-safe publication: partially built values never enter a cache.
+
+All externally reusable keys contain the data version that affects their value.
+GTFS data uses the active `feed_info.feed_version`, with the imported feed date
+range as a fallback. Reliability data uses the latest completed profile
+aggregation `updated_at` value. Imports are transactional, so a failed or
+partially completed import cannot publish a new active feed version. Old entries
+may remain until TTL/LRU eviction, but a new version makes them unreachable.
+
+The shared cache layers are:
+
+| Layer | Key | Stored value and behavior |
+| --- | --- | --- |
+| Trip connections | `(gtfs_version, trip_id)` | Immutable, ordered complete trip chain; missing trips use a shorter negative TTL |
+| Static GTFS snapshot | `gtfs_version` | Immutable stop metadata/coordinates and transfers grouped through the search index |
+| Active service day | `(gtfs_version, service_date)` | Immutable active service-ID set using calendar rules and exceptions |
+| Daily departures | `(gtfs_version, service_date)` | Immutable departures and parallel departure-time tuples grouped by stop for binary search |
+| Reliability profiles | `(profile_version, route_id, direction_id, time_window)` | Raw exact profile and fallback parents; `minimum_samples` selection remains request-local |
+| A* heuristic | `(gtfs_version, destination_stop_id, current_stop_id)` | Bounded Haversine travel-time estimate; request-local lookup remains first |
+| Exact route response | All behavior-changing request fields plus GTFS/profile versions | Successful immutable result only; exact departure time and scoring inputs are never rounded |
+| Warm-up completion | `(phase, gtfs_version, service_date)` | Prevents repeated successful SkyTrain/date warm-ups |
+
+Trip lookup remains ordered as request-local cache, shared cache, bounded batch
+query for remaining trip IDs, and publication into both caches. Empty trips are
+remembered during the request and in the short-lived negative cache, so a known
+empty trip is not repeatedly queried. Shared collections are tuples or mapping
+proxies so callers cannot mutate data used by another request.
+
+Bus trip loading remains frontier-driven. The daily index contains boardable
+departure edges, not every complete trip chain. A* collects only trips reached
+by its real frontier and continues to batch-load those chains. The shared cache
+therefore does not revert to eager loading of the whole bus network.
+
+#### Switching between previous and shared caching
+
+API requests accept:
+
+```json
+{
+  "cache_mode": "shared"
+}
+```
+
+`shared` enables the new process-wide caches. `request` bypasses the shared
+trip, daily, static, profile, heuristic, and response caches and reproduces the
+previous request-local behavior while retaining frontier trip loading. The
+benchmark exposes the same switch:
+
+```powershell
+python scripts/benchmark_astar.py --cache-mode request
+python scripts/benchmark_astar.py --cache-mode shared
+```
+
+The code-wide default is intentionally one editable constant near the top of
+`src/routing/cache.py`:
+
+```python
+DEFAULT_ROUTING_CACHE_MODE = "shared"  # "shared" or "request"
+```
+
+An explicit API value or benchmark argument overrides that default.
+
+#### Daily departure index and GTFS service-day semantics
+
+The daily index is built lazily or during startup for one
+`(gtfs_version, service_date)` at a time. The database returns departures only
+for services active on that date. Calendar additions and removals are included,
+including services added solely through `calendar_dates`. Departures are grouped
+by stop, deterministically sorted by departure time, trip, and stop sequence,
+and published only after the entire immutable index is complete. Searches use
+`bisect_left`/`bisect_right` over parallel `timedelta` tuples.
+
+PostgreSQL intervals remain Python `timedelta` values throughout this path; they
+are never cast to `datetime.time`. Departures such as `24:01:00` and `25:10:00`
+therefore retain the correct GTFS service date and participate in binary search
+without modulo-24 truncation.
+
+Only three service dates are retained by default. Concurrent requests for the
+same missing date wait on one per-key single-flight build. Different cache keys
+do not share a global cache-build lock, and database I/O occurs outside the
+cache-manager lock.
+
+#### Cold-cache diagnosis
+
+The first shared-cache implementation improved repeated requests but increased
+the representative first request from roughly 2.8 seconds to 10.3 seconds.
+Component-level diagnostics were added before changing behavior. The measured
+cold A* request was:
+
+| Cold component | Measured time |
+| --- | ---: |
+| GTFS version lookup | 24 ms |
+| Static snapshot construction | 53 ms |
+| Daily departure database query | **8,475 ms** |
+| Daily departure grouping | 58 ms |
+| Daily departure sorting | 135 ms |
+| Total daily-index construction | **8,804 ms** |
+| Frontier trip-connection queries | 217 ms |
+| A* search | 1,303 ms |
+| Ranking | 2 ms |
+| Total request | **10,311 ms** |
+
+The database query for a complete active service day--not Python grouping or
+sorting--was the dominant regression. A serialized/prebuilt Python index artifact
+was therefore not added: it would add format, atomic-write, and deployment
+complexity while leaving the dominant database extraction problem to be solved
+elsewhere. The prepared-artifact idea remains a later option if imports can
+produce a safe versioned format directly.
+
+#### Startup warm-up coordinator
+
+`RoutingWarmupCoordinator` reuses the existing cache manager and the same
+`ensure_static_snapshot` and `ensure_daily_index` builders used by request-time
+fallback. It does not maintain a second cache system.
+
+The essential startup phase resolves the active GTFS version, publishes the
+immutable stop/transfer snapshot, caches today's active services, and--when
+enabled--builds today's daily departure index. Predictable work is run with
+`asyncio.to_thread`, so blocking PostgreSQL and CPU work never executes directly
+on FastAPI's event loop.
+
+After essential data is ready, the coordinator can preload active SkyTrain trip
+chains. Tomorrow's index and SkyTrain trips can optionally run afterward in the
+background. Tomorrow warming is disabled by default so it cannot compete with
+live requests on a small Render database. Warm-up tasks are version/date
+single-flight operations, log one completion or failure, accept a shutdown stop
+request, and finish safely before owned database services are closed.
+
+If startup warming fails, the failing phase is recorded, no partial object is
+published, and readiness remains false. Calling the coordinator again can safely
+retry. If the configured readiness timeout expires, the process becomes live,
+warming continues in the protected task, and `/ready` remains false until the
+minimum structures are available.
+
+#### Selective SkyTrain preloading
+
+SkyTrain is identified from GTFS metadata using `routes.route_type = 1`, the
+GTFS subway/metro category. Names such as Expo, Millennium, and Canada Line are
+not hardcoded. The selected trips are intersected with service IDs active for
+the warmed Vancouver service date, so inactive rail trips are not cached and
+calendar exceptions remain authoritative.
+
+The active SkyTrain trip IDs are passed to `RequestTripConnectionLoader`, which
+uses the normal bounded batch query and publishes ordered tuples under the
+normal `(gtfs_version, trip_id)` key. SkyTrain coordinates, transfers, and
+departures reuse the static and daily snapshots; no duplicate SkyTrain-specific
+index exists. Bus trips continue to load from the live A* frontier.
+
+For the measured feed, startup found 3 rail routes, 2,129 active trips, and
+33,178 connections. The shallow incremental cache estimate was about 747 KB.
+Those 2,129 entries fit within the normal 10,000-trip capacity, leaving room for
+approximately 7,871 recently used bus trips, so a second protected rail cache
+was not necessary.
+
+#### Health, readiness, and observability
+
+`/health` reports that the API process is alive. `/ready` separately reports
+whether the minimum warmed data is available. Its non-sensitive response
+includes GTFS version, essential/SkyTrain completion, background activity,
+failure state, phase timings, rail route/trip/connection counts, rail memory,
+and single-flight waits. Credentials, connection strings, and user route
+queries are never exposed.
+
+Profiled route diagnostics now include:
+
+- GTFS version lookup time;
+- static snapshot construction time;
+- daily departure query, grouping, sorting, and total index time;
+- SkyTrain and reliability warm-up time fields;
+- request-local and shared trip-cache hits separately;
+- negative trip-cache hits;
+- daily, reliability, and heuristic hits/misses;
+- first shared-request hits and misses;
+- response-cache hit state;
+- aggregate evictions, single-flight waits, and shallow cache memory.
+
+Process startup-to-ready time and first user-request time are reported
+separately. Moving 8-9 seconds into startup is not presented as eliminating the
+work.
+
+#### Configuration defaults
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `ROUTING_TRIP_CACHE_CAPACITY` | `10000` | Complete frontier/SkyTrain trip chains; tune from production memory measurements |
+| `ROUTING_TRIP_CACHE_TTL_SECONDS` | `3600` | Positive trip, static, service-day, and daily-index lifetime |
+| `ROUTING_NEGATIVE_TRIP_CACHE_TTL_SECONDS` | `60` | Missing or empty trip lifetime |
+| `ROUTING_DAILY_INDEX_CAPACITY` | `3` | Service dates retained per worker |
+| `ROUTING_HEURISTIC_CACHE_CAPACITY` | `50000` | Destination/current-stop Haversine entries |
+| `ROUTING_PROFILE_CACHE_CAPACITY` | `20000` | Raw reliability cells and parent profiles |
+| `ROUTING_RESPONSE_CACHE_ENABLED` | `true` | Enable exact completed-response caching |
+| `ROUTING_RESPONSE_CACHE_CAPACITY` | `256` | Completed responses retained per worker |
+| `ROUTING_RESPONSE_CACHE_TTL_SECONDS` | `60` | Completed-response lifetime |
+| `CACHE_WARMUP_ENABLED` | `true` | Enable startup coordinator |
+| `CACHE_WARMUP_BLOCK_READINESS` | `true` | Wait for essential warming before normal readiness |
+| `CACHE_WARMUP_TODAY_INDEX` | `true` | Build today's measured-expensive daily index at startup |
+| `CACHE_WARMUP_SKYTRAIN` | `true` | Preload active route-type-1 trip chains |
+| `CACHE_WARMUP_TOMORROW_INDEX` | `false` | Optionally build tomorrow after essential readiness |
+| `CACHE_WARMUP_TIMEOUT_SECONDS` | `30` | Maximum blocking readiness wait before warming continues asynchronously |
+
+#### Measured cache and warm-up results
+
+For the representative multi-leg A* route:
+
+| Mode | Startup-to-ready | First request | Second request | Warm transit DB queries | Shallow shared memory |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Previous request-local caching | 34 ms | 2,818 ms | 2,816 ms | 117 | 0 |
+| Shared caching, warming disabled | approximately 34 ms | 10,311 ms | 969 ms | 0 | 41.6 MB |
+| Essential startup warming | 8,749 ms | 1,393 ms | 969 ms | 0 | 41.6 MB |
+| Essential plus SkyTrain warming | 9,136 ms | 1,336 ms | 1,203 ms | 0 | 42.3 MB |
+
+For a measured SkyTrain-only route from stop `8039` to `8058`:
+
+| Mode | Startup-to-ready | First request | Second request |
+| --- | ---: | ---: | ---: |
+| Previous request-local caching | 34 ms | 2,969 ms | 2,794 ms |
+| Essential warming | 9,081 ms | 1,314 ms | 641 ms |
+| Essential plus SkyTrain warming | 9,431 ms | **1,095 ms** | **604 ms** |
+
+An overnight route departing at `24:01:00` returned the exact trip at
+`1 day, 0:01:00`; its first post-readiness request took 106 ms and the second
+took 59 ms. Cold and warm route signatures were identical in every measured
+case. The first user-visible request is therefore substantially faster while
+warm performance is retained, with the startup-to-ready cost reported openly.
+
+#### Verification and limitations
+
+Tests cover bounded LRU eviction, trip reuse, batching, negative caching,
+version isolation, raw-profile reuse with different `minimum_samples`, exact
+response keys, GTFS times beyond 24 hours, route-type-1 rail selection, active
+service filtering, SkyTrain trip publication, concurrent daily/SkyTrain
+single-flight builds, failed-build publication safety, background shutdown,
+readiness state, and cold/warm equality. At implementation time the focused
+suite passed 44 tests. The complete suite passed 158 tests with one pre-existing
+API-default mismatch: the schema currently defaults to `astar` while that test
+expects `mc_raptor`; the caching work did not change the algorithm default.
+
+The cache memory figures are deliberately labeled shallow estimates. Python
+object dictionaries and referenced strings mean real retained memory is higher,
+so capacities must be checked against production RSS on Render. Every
+Uvicorn/Gunicorn worker has an independent cache, warms independently after a
+restart, and pays its own roughly nine-second startup build. Redis may later be
+useful for immutable trip chains and raw profiles when multi-worker duplication
+justifies serialization and network overhead; it would not by itself remove the
+daily departure extraction cost.
+
+Angle-only speculative prefetching remains intentionally excluded. A future
+experiment must use scheduled downstream arrival plus A*'s actual `f = g + h`
+frontier priority, remain strictly capped, and demonstrate useful prefetch hit
+rates before being enabled.

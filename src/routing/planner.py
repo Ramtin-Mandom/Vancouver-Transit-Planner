@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import heapq
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from itertools import count
+from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
 from .models import (
@@ -18,6 +19,7 @@ from .models import (
 )
 from .service_calendar import ServiceCalendar
 from .reconstruction import build_leg_stops, load_connection_stops
+from .cache import DEFAULT_ROUTING_CACHE_MODE, RoutingCacheManager
 
 if TYPE_CHECKING:
     from .route_results import RoutingPreferences
@@ -58,10 +60,12 @@ class _Walk:
 
 class TransitPlanner:
     def __init__(
-        self, database: RoutingRepository, calendar: ServiceCalendar | None = None
+        self, database: RoutingRepository, calendar: ServiceCalendar | None = None,
+        cache_manager: RoutingCacheManager | None = None,
     ) -> None:
         self.database = database
         self.calendar = calendar or ServiceCalendar(database)  # type: ignore[arg-type]
+        self.cache_manager = cache_manager
 
     def plan(
         self,
@@ -257,16 +261,60 @@ class TransitPlanner:
         from .route_results import get_ranked_route_result
 
         algorithm = str(algorithm).strip().lower()
+        cache_mode = str(
+            bounds.pop("cache_mode", DEFAULT_ROUTING_CACHE_MODE)
+        ).strip().lower()
+        if cache_mode not in {"request", "shared"}:
+            raise ValueError("cache_mode must be 'request' or 'shared'")
+        active_cache = self.cache_manager if cache_mode == "shared" else None
+        # Normalize effective defaults before constructing the exact response
+        # key so omitted and explicitly supplied equivalent inputs can reuse it.
+        bounds.setdefault("trip_loading_mode", "frontier")
+        version_started = perf_counter()
+        gtfs_lookup = getattr(self.database, "gtfs_version", None)
+        gtfs_version = str(gtfs_lookup()) if callable(gtfs_lookup) else "unknown"
+        profile_lookup = getattr(getattr(resolver, "database", None), "profile_version", None)
+        profile_version = (
+            str(profile_lookup()) if callable(profile_lookup)
+            else str(getattr(resolver, "profile_version", "unknown"))
+        )
+        version_lookup_ms = (perf_counter() - version_started) * 1000
+        response_key = (
+            gtfs_version, profile_version, cache_mode,
+            origin_stop_id, destination_stop_id,
+            service_date, departure_time, algorithm, route_number,
+            tuple(sorted(vars(preferences).items())) if preferences is not None else None,
+            getattr(resolver, "minimum_samples", None),
+            tuple(sorted((name, repr(value)) for name, value in bounds.items())),
+        )
+        if active_cache is not None and active_cache.configuration.response_enabled:
+            found, cached = active_cache.responses.get(response_key)
+            if found and cached is not None:
+                if cached.diagnostics is None:
+                    return cached
+                hit_caches = replace(
+                    cached.diagnostics.cache_statistics,
+                    response_cache_hit=True,
+                )
+                return replace(
+                    cached,
+                    diagnostics=replace(
+                        cached.diagnostics, cache_statistics=hit_caches
+                    ),
+                )
         # Keep the planner/API on the documented optimized loading path. The
         # search class still exposes eager mode for controlled comparisons.
-        bounds.setdefault("trip_loading_mode", "frontier")
         if algorithm in {"baseline", "dijkstra"}:
-            search = ParetoTransitSearch(self.database, self.calendar, resolver)
+            search = ParetoTransitSearch(
+                self.database, self.calendar, resolver,
+                cache_manager=active_cache, gtfs_version=gtfs_version,
+            )
         elif algorithm == "astar":
             from .astar import AStarParetoTransitSearch
 
             search = AStarParetoTransitSearch(
-                self.database, self.calendar, resolver
+                self.database, self.calendar, resolver,
+                cache_manager=active_cache, gtfs_version=gtfs_version,
             )
         elif algorithm == "mc_raptor":
             from .mc_raptor import McRaptorTransitSearch
@@ -279,7 +327,7 @@ class TransitPlanner:
                 "routing algorithm must be 'baseline', 'dijkstra', 'astar', "
                 "or 'mc_raptor'"
             )
-        return get_ranked_route_result(
+        result = get_ranked_route_result(
             search,
             origin_stop_id,
             destination_stop_id,
@@ -289,6 +337,20 @@ class TransitPlanner:
             preferences=preferences,
             **bounds,
         )
+        if result.diagnostics is not None:
+            result = replace(
+                result,
+                diagnostics=replace(
+                    result.diagnostics,
+                    timings_ms=replace(
+                        result.diagnostics.timings_ms,
+                        gtfs_version_lookup_ms=version_lookup_ms,
+                    ),
+                ),
+            )
+        if active_cache is not None and active_cache.configuration.response_enabled:
+            active_cache.responses.put(response_key, result)
+        return result
 
     def _relax_departures(
         self,
