@@ -229,7 +229,6 @@ class RoutePlanResponse(ApiModel):
 class RoutePlanRequest(ApiModel):
     origin_stop_id: str
     destination_stop_id: str
-    service_date: date
     departure_time: str
     algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
     cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE

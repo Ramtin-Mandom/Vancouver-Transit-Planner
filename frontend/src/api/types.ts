@@ -60,7 +60,6 @@ export interface RoutePlanResponse {
 export interface RoutePlanRequest {
   origin_stop_id: string;
   destination_stop_id: string;
-  service_date: string;
   departure_time: string;
   algorithm?: "baseline" | "dijkstra" | "astar" | "mc_raptor";
   route_number: number;

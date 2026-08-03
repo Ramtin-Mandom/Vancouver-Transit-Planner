@@ -28,8 +28,11 @@ class Resolver:
         self.fallback = fallback
         self.calls = []
 
-    def resolve(self, route_id, stop_id, weekday, hour):
-        key = (route_id, stop_id)
+    def resolve(self, route_id, direction_id, scheduled_time):
+        key = next(
+            (candidate for candidate in self.probabilities if candidate[0] == route_id),
+            (route_id, None),
+        )
         self.calls.append(key)
         probability = self.probabilities.get(key)
         if probability is None:

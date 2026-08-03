@@ -115,3 +115,24 @@ def test_shared_raw_profiles_do_not_share_minimum_sample_selection():
     assert not permissive.resolve("R", 0, timedelta(hours=8)).insufficient_data
     assert strict.resolve("R", 0, timedelta(hours=8)).insufficient_data
     assert database.calls == 1
+
+
+def test_shared_profile_cache_key_has_no_service_date_or_weekday():
+    class Database:
+        calls = 0
+
+        def profile(self, *args):
+            self.calls += 1
+            return profile()
+
+        def fallback_profile(self, *args):
+            return None
+
+    database = Database()
+    shared = RoutingCacheManager()
+    first = ProfileResolver(database, shared_cache=shared, profile_version="p1")
+    second = ProfileResolver(database, shared_cache=shared, profile_version="p1")
+    first.resolve("R", 0, timedelta(hours=8))
+    second.resolve("R", 0, timedelta(hours=8))
+    assert database.calls == 1
+    assert tuple(shared.profiles._items)[0] == ("p1", "R", 0, "morning_peak")

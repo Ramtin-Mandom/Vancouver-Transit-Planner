@@ -12,7 +12,6 @@ import { StopAutocomplete } from "./StopAutocomplete";
 export interface PlannerValues {
   origin: Stop | null;
   destination: Stop | null;
-  serviceDate: string;
   departureTime: string;
   routeNumber: number;
   reliability: number;
@@ -27,18 +26,11 @@ interface Props {
   onSubmit: (request: RoutePlanRequest) => void;
 }
 
-type Errors = Partial<Record<"origin" | "destination" | "date" | "time", string>>;
-
-function localDate(): string {
-  const now = new Date();
-  const offset = now.getTimezoneOffset() * 60_000;
-  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
-}
+type Errors = Partial<Record<"origin" | "destination" | "time", string>>;
 
 export const DEFAULT_PLANNER_VALUES: PlannerValues = {
   origin: null,
   destination: null,
-  serviceDate: localDate(),
   departureTime: "08:00:00",
   routeNumber: 5,
   reliability: 50,
@@ -71,7 +63,6 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
     ) {
       nextErrors.destination = "Origin and destination must be different.";
     }
-    if (!values.serviceDate) nextErrors.date = "Choose a service date.";
     if (!/^\d+:[0-5]\d:[0-5]\d$/.test(values.departureTime)) {
       nextErrors.time = "Use GTFS time in HH:MM:SS format.";
     }
@@ -82,7 +73,6 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
     onSubmit({
       origin_stop_id: values.origin.stop_id,
       destination_stop_id: values.destination.stop_id,
-      service_date: values.serviceDate,
       departure_time: values.departureTime,
       route_number: values.routeNumber,
       minimum_samples: values.minimumSamples,
@@ -142,15 +132,16 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
 
       <div className="tripFields">
         <div className="fieldGroup">
-          <label htmlFor="service-date">Service date</label>
+          <label htmlFor="travel-date">Travel date</label>
           <input
-            id="service-date"
+            id="travel-date"
             type="date"
-            value={values.serviceDate}
-            aria-invalid={Boolean(errors.date)}
-            onChange={(event) => update("serviceDate", event.target.value)}
+            disabled
+            aria-describedby="travel-date-status"
           />
-          {errors.date && <small className="fieldError">{errors.date}</small>}
+          <small id="travel-date-status" className="unavailableStatus">
+            Feature not implemented
+          </small>
         </div>
         <div className="fieldGroup">
           <label htmlFor="departure-time">Departure time</label>

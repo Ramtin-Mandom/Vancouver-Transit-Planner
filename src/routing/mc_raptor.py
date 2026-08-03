@@ -338,19 +338,12 @@ class McRaptorTransitSearch:
         scans_per_round: list[int] = []
         profile_cache: dict[tuple[str, int | None, timedelta], Any] = {}
 
-        def profile(connection, alight_stop):
+        def profile(connection, _alight_stop):
             key = (connection.route_id, connection.direction_id, connection.arrival_time)
             if key not in profile_cache:
                 caches["profile_cache_misses"] += 1
                 caches["profile_resolver_calls"] += 1
-                try:
-                    profile_cache[key] = self.resolver.resolve(*key)
-                except TypeError:
-                    hour = int(connection.arrival_time.total_seconds() // 3600) % 24
-                    profile_cache[key] = self.resolver.resolve(
-                        connection.route_id, alight_stop,
-                        service_date.weekday(), hour,
-                    )
+                profile_cache[key] = self.resolver.resolve(*key)
                 check_deadline()
             else:
                 caches["profile_cache_hits"] += 1

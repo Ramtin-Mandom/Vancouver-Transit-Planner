@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass, replace
-from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
+from datetime import date, timedelta
 from threading import Event, RLock
 from time import perf_counter
 from types import MappingProxyType
@@ -14,15 +13,9 @@ from typing import Any
 
 from .cache import RoutingCacheManager, _enabled, _positive_float
 from .search_data import RequestTripConnectionLoader, SearchDataIndex
+from .service_date import current_service_date
 
 logger = logging.getLogger(__name__)
-VANCOUVER_TIMEZONE = ZoneInfo("America/Vancouver")
-
-
-def current_service_date() -> date:
-    return datetime.now(VANCOUVER_TIMEZONE).date()
-
-
 @dataclass(frozen=True)
 class WarmupConfiguration:
     enabled: bool = True

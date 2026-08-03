@@ -27,7 +27,6 @@ describe("API client", () => {
     const payload: RoutePlanRequest = {
       origin_stop_id: "646",
       destination_stop_id: "31",
-      service_date: "2026-07-29",
       departure_time: "25:10:00",
       route_number: 5,
       minimum_samples: 20,

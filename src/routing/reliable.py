@@ -547,7 +547,7 @@ class ParetoTransitSearch:
                 caches["transfer_cache_hits"] += 1
             return transfer_cache[stop_id]
 
-        def profile(connection: Connection, alight_stop: str):
+        def profile(connection: Connection, _alight_stop: str):
             check_deadline()
             key = (
                 connection.route_id,
@@ -559,16 +559,7 @@ class ParetoTransitSearch:
                 if include_diagnostics:
                     caches["profile_cache_misses"] += 1
                     caches["profile_resolver_calls"] += 1
-                try:
-                    profile_cache[key] = self.resolver.resolve(*key)
-                except TypeError:
-                    # Compatibility for external resolvers using the deprecated
-                    # stop/weekday/hour interface.
-                    hour = int(connection.arrival_time.total_seconds() // 3600) % 24
-                    profile_cache[key] = self.resolver.resolve(
-                        connection.route_id, alight_stop,
-                        service_date.weekday(), hour,
-                    )
+                profile_cache[key] = self.resolver.resolve(*key)
                 if include_diagnostics:
                     timings["profile_resolution_ms"] += (perf_counter() - profile_started) * 1000
                 check_deadline()
