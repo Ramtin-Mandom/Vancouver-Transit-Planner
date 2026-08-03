@@ -150,6 +150,12 @@ def test_health(client):
     assert client.get("/health").json() == {"status": "ok"}
 
 
+def test_ready_is_compatible_with_services_without_warmup(client):
+    response = client.get("/ready")
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
 def test_successful_stop_search_trims_query_and_serializes_decimals(
     client, api_services
 ):
@@ -220,6 +226,21 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
         },
     ]
     assert body["diagnostics"] is None
+
+
+def test_route_request_can_select_request_local_cache_mode(client, api_services):
+    response = client.post(
+        "/routes/plan", json=valid_request(cache_mode="request")
+    )
+    assert response.status_code == 200
+    assert api_services.planner.calls[-1][1]["cache_mode"] == "request"
+
+
+def test_invalid_cache_mode_is_rejected(client):
+    response = client.post(
+        "/routes/plan", json=valid_request(cache_mode="global")
+    )
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize("algorithm", ["baseline", "dijkstra", "astar", "mc_raptor"])

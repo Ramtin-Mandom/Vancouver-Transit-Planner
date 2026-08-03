@@ -19,8 +19,13 @@ class ServiceCalendar:
     def __init__(self, database: CalendarRepository) -> None:
         self.database = database
 
-    @lru_cache(maxsize=4096)
     def operates(self, service_id: str, service_date: date) -> bool:
+        version_lookup = getattr(self.database, "gtfs_version", None)
+        version = str(version_lookup()) if callable(version_lookup) else "unknown"
+        return self._operates(version, service_id, service_date)
+
+    @lru_cache(maxsize=4096)
+    def _operates(self, version: str, service_id: str, service_date: date) -> bool:
         exception = self.database.calendar_exception(service_id, service_date)
         if exception == 1:
             return True

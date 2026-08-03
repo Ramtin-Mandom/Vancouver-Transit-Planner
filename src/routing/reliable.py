@@ -37,6 +37,8 @@ from .models import (
 from .route_results import itinerary_identity
 from .reconstruction import build_leg_stops, load_connection_stops
 from .search_data import RequestTripConnectionLoader, SearchDataIndex
+from .cache import RoutingCacheManager
+from .warmup import ensure_daily_index, ensure_static_snapshot
 
 EPSILON = 1e-9
 DEFAULT_MAX_TRANSFERS = 3
@@ -84,10 +86,16 @@ def _dominates(left: _Label, right: _Label) -> bool:
 
 
 class ParetoTransitSearch:
-    def __init__(self, database: Any, calendar: Any, resolver: Any) -> None:
+    def __init__(
+        self, database: Any, calendar: Any, resolver: Any, *,
+        cache_manager: RoutingCacheManager | None = None,
+        gtfs_version: str = "unknown",
+    ) -> None:
         self.database = database
         self.calendar = calendar
         self.resolver = resolver
+        self.cache_manager = cache_manager
+        self.gtfs_version = gtfs_version
 
     @property
     def algorithm_name(self) -> str:
@@ -139,6 +147,10 @@ class ParetoTransitSearch:
         if trip_loading_mode not in {"frontier", "eager"}:
             raise ValueError("trip_loading_mode must be 'frontier' or 'eager'")
         started = perf_counter()
+        is_first_shared_request = (
+            self.cache_manager.register_search()
+            if self.cache_manager is not None else False
+        )
         deadline = started + timeout_seconds
         timings = (
             vars(SearchDiagnosticTimings()).copy()
@@ -160,6 +172,10 @@ class ParetoTransitSearch:
                 return None
             try:
                 if frontier_loader is not None:
+                    caches["trip_request_cache_hits"] = frontier_loader.request_cache_hits
+                    caches["trip_shared_cache_hits"] = frontier_loader.shared_cache_hits
+                    caches["trip_shared_cache_misses"] = frontier_loader.shared_cache_misses
+                    caches["trip_negative_cache_hits"] = frontier_loader.negative_cache_hits
                     timings["frontier_trip_query_ms"] = frontier_loader.query_ms
                     timings["frontier_trip_indexing_ms"] = frontier_loader.indexing_ms
                     counters["unique_frontier_trips_requested"] = len(
@@ -183,6 +199,28 @@ class ParetoTransitSearch:
                     )
             except NameError:
                 pass
+            if self.cache_manager is not None:
+                shared_stats = self.cache_manager.statistics()
+                caches["daily_index_hits"] = shared_stats["daily_indexes"].hits
+                caches["daily_index_misses"] = shared_stats["daily_indexes"].misses
+                caches["reliability_cache_hits"] = shared_stats["profiles"].hits
+                caches["reliability_cache_misses"] = shared_stats["profiles"].misses
+                caches["heuristic_cache_hits"] = shared_stats["heuristics"].hits
+                caches["heuristic_cache_misses"] = shared_stats["heuristics"].misses
+                caches["cache_evictions"] = sum(item.evictions for item in shared_stats.values())
+                caches["shared_cache_memory_estimate_bytes"] = (
+                    self.cache_manager.memory_estimate_bytes()
+                )
+                caches["single_flight_wait_count"] = (
+                    self.cache_manager.single_flight_wait_count
+                )
+                if is_first_shared_request:
+                    caches["first_request_cache_hits"] = sum(
+                        item.hits for item in shared_stats.values()
+                    )
+                    caches["first_request_cache_misses"] = sum(
+                        item.misses for item in shared_stats.values()
+                    )
             elapsed = (perf_counter() - started) * 1000
             timings["measured_search_ms"] = elapsed
             classified = sum(value for name, value in timings.items() if name not in {
@@ -239,7 +277,19 @@ class ParetoTransitSearch:
         horizon = departure_time + timedelta(minutes=search_horizon_minutes)
         active_lookup = getattr(self.database, "active_service_ids", None)
         active_started = perf_counter() if include_diagnostics else 0.0
-        active = active_lookup(service_date) if callable(active_lookup) else None
+        service_day_key = (self.gtfs_version, service_date)
+        service_found, service_value = (
+            self.cache_manager.service_days.get(service_day_key)
+            if self.cache_manager is not None else (False, None)
+        )
+        if service_found:
+            active = set(service_value or ())
+        else:
+            active = active_lookup(service_date) if callable(active_lookup) else None
+            if self.cache_manager is not None and active is not None:
+                self.cache_manager.service_days.put(
+                    service_day_key, frozenset(active)
+                )
         if include_diagnostics:
             timings["active_service_lookup_ms"] += (perf_counter() - active_started) * 1000
         departure_cache: dict[str, list[Connection]] = {}
@@ -251,7 +301,64 @@ class ParetoTransitSearch:
         bulk_departures = getattr(self.database, "bulk_departures_in_window", None)
         bulk_transfers = getattr(self.database, "bulk_transfers", None)
         bulk_trips = getattr(self.database, "bulk_trip_connections", None)
-        if all(callable(item) for item in (bulk_departures, bulk_transfers, bulk_trips)):
+        daily_loader = getattr(self.database, "bulk_daily_departures", None)
+        used_shared_index = False
+        if (
+            self.cache_manager is not None and callable(daily_loader)
+            and callable(bulk_transfers) and callable(bulk_trips)
+        ):
+            preload_started = perf_counter()
+            (static_stops, loaded_transfers_tuple), static_ms = ensure_static_snapshot(
+                self.cache_manager, self.database, self.gtfs_version
+            )
+            if include_diagnostics:
+                timings["static_snapshot_build_ms"] += static_ms
+            loaded_transfers = list(loaded_transfers_tuple)
+            daily_key = (self.gtfs_version, service_date)
+            data_index, daily_timings = ensure_daily_index(
+                self.cache_manager, self.database, self.gtfs_version, service_date
+            )
+            if include_diagnostics:
+                timings["daily_departure_query_ms"] += daily_timings["query_ms"]
+                timings["daily_departure_grouping_ms"] += daily_timings["grouping_ms"]
+                timings["daily_departure_sorting_ms"] += daily_timings["sorting_ms"]
+                timings["daily_departure_index_build_ms"] += daily_timings["total_ms"]
+            loaded_departures = [
+                item for stop_id in data_index.departures_by_stop
+                for item in data_index.departures(stop_id, departure_time, horizon)
+            ]
+            loaded_connections = []
+            trip_ids = {item.trip_id for item in loaded_departures}
+            frontier_loader = RequestTripConnectionLoader(
+                self.database, shared_cache=self.cache_manager,
+                gtfs_version=self.gtfs_version,
+            )
+            used_shared_index = True
+            phase_started = perf_counter()
+            preload_profiles = getattr(self.resolver, "preload", None)
+            profile_query_count = 0
+            if callable(preload_profiles):
+                profile_keys = {
+                    (item.route_id, item.direction_id, window_name)
+                    for item in loaded_departures
+                    for window_name, _, _ in TIME_WINDOWS
+                }
+                profile_query_count = preload_profiles(profile_keys)
+                if include_diagnostics:
+                    caches["bulk_profile_query_count"] = profile_query_count
+            if include_diagnostics:
+                profile_ms = (perf_counter() - phase_started) * 1000
+                timings["reliability_preload_ms"] = profile_ms
+                if profile_query_count:
+                    timings["reliability_snapshot_build_ms"] = profile_ms
+                timings["initial_preload_ms"] = timings["preload_total_ms"] = (
+                    perf_counter() - preload_started
+                ) * 1000
+                caches["unique_departures_loaded"] = len(loaded_departures)
+                caches["unique_transfers_loaded"] = len(loaded_transfers)
+                caches["request_index_memory_estimate_bytes"] = 0
+        if (not used_shared_index and
+                all(callable(item) for item in (bulk_departures, bulk_transfers, bulk_trips))):
             preload_started = perf_counter()
             coordinated_loader = getattr(self.database, "bulk_search_data", None)
             if callable(coordinated_loader):
@@ -303,6 +410,7 @@ class ParetoTransitSearch:
                 caches["unique_connections_loaded"] = len(set(loaded_connections))
             phase_started = perf_counter()
             preload_profiles = getattr(self.resolver, "preload", None)
+            profile_query_count = 0
             if callable(preload_profiles):
                 profile_keys = {
                     (item.route_id, item.direction_id, window_name)
@@ -313,14 +421,20 @@ class ParetoTransitSearch:
                 if include_diagnostics:
                     caches["bulk_profile_query_count"] = profile_query_count
             if include_diagnostics:
-                timings["reliability_preload_ms"] = (
+                profile_ms = (
                     perf_counter() - phase_started
                 ) * 1000
+                timings["reliability_preload_ms"] = profile_ms
+                if profile_query_count:
+                    timings["reliability_snapshot_build_ms"] = profile_ms
             data_index = SearchDataIndex.build(
                 loaded_departures, loaded_connections, loaded_transfers
             )
             if trip_loading_mode == "frontier":
-                frontier_loader = RequestTripConnectionLoader(self.database)
+                frontier_loader = RequestTripConnectionLoader(
+                    self.database, shared_cache=self.cache_manager,
+                    gtfs_version=self.gtfs_version,
+                )
             if include_diagnostics:
                 timings["initial_preload_ms"] = timings["preload_total_ms"] = (
                     perf_counter() - preload_started

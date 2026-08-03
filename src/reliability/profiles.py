@@ -7,6 +7,7 @@ from datetime import timedelta
 from .classification import time_window
 from .models import ProfileSelection, ReliabilityProfile
 from .policy import DEFAULT_MINIMUM_SAMPLES
+from src.routing.cache import RoutingCacheManager
 
 FALLBACKS = ("route_direction_window", "route_direction", "route", "network")
 
@@ -16,28 +17,93 @@ class ProfileResolver:
         self,
         database,
         minimum_samples: int = DEFAULT_MINIMUM_SAMPLES,
+        *, shared_cache: RoutingCacheManager | None = None,
+        profile_version: str = "unknown",
     ) -> None:
         self.database = database
         self.minimum_samples = minimum_samples
         self._cache = {}
+        self.shared_cache = shared_cache
+        self.profile_version = profile_version
+        self.shared_cache_hits = 0
+        self.shared_cache_misses = 0
 
     def preload(self, keys: set[tuple[str, int | None, str]]) -> int:
         """Populate the request-local resolver cache with two bulk queries."""
         loader = getattr(self.database, "bulk_profile_data", None)
         if not callable(loader) or not keys:
             return 0
-        exact, parents = loader(keys)
+        missing = set()
+        raw_by_key = {}
+        for key in keys:
+            cache_key = (self.profile_version, *key)
+            found, raw = (
+                self.shared_cache.profiles.get(cache_key)
+                if self.shared_cache is not None else (False, None)
+            )
+            if found:
+                self.shared_cache_hits += 1
+                raw_by_key[key] = raw
+            else:
+                if self.shared_cache is not None:
+                    self.shared_cache_misses += 1
+                missing.add(key)
+        query_count = 0
+        if missing:
+            def load_missing():
+                loaded = {}
+                remaining = set(missing)
+                if self.shared_cache is not None:
+                    for missing_key in tuple(remaining):
+                        found, cached = self.shared_cache.profiles.get(
+                            (self.profile_version, *missing_key)
+                        )
+                        if found:
+                            loaded[missing_key] = cached
+                            remaining.remove(missing_key)
+                exact, parents = loader(remaining) if remaining else ({}, {})
+                for missing_key in remaining:
+                    route_id, direction_id, window = missing_key
+                    raw = (
+                        exact.get(missing_key),
+                        parents.get(("route_direction", route_id, -1 if direction_id is None else direction_id)),
+                        parents.get(("route", route_id, -1)),
+                        parents.get(("network", "*", -1)),
+                    )
+                    loaded[missing_key] = raw
+                    if self.shared_cache is not None:
+                        self.shared_cache.profiles.put(
+                            (self.profile_version, *missing_key), raw
+                        )
+                return loaded
+
+            if self.shared_cache is not None:
+                loaded = self.shared_cache.single_flight(
+                    "profiles",
+                    (self.profile_version, tuple(sorted(missing, key=repr))),
+                    load_missing,
+                )
+            else:
+                loaded = load_missing()
+            raw_by_key.update(loaded)
+            query_count = 2
         for key in keys:
             route_id, direction_id, window = key
+            profile, direction_parent, route_parent, network_parent = raw_by_key[key]
+            parent_values = {
+                ("route_direction", route_id, -1 if direction_id is None else direction_id): direction_parent,
+                ("route", route_id, -1): route_parent,
+                ("network", "*", -1): network_parent,
+            }
             self._cache[key] = self._select(
                 route_id,
                 direction_id,
-                exact.get(key),
-                lambda level, route, direction: parents.get((
+                profile,
+                lambda level, route, direction: parent_values.get((
                     level, route or "*", -1 if direction is None else direction
                 )),
             )
-        return 2
+        return query_count
 
     def set_statement_timeout(self, milliseconds: int) -> None:
         configure = getattr(self.database, "set_statement_timeout", None)
@@ -56,12 +122,48 @@ class ProfileResolver:
         if key in self._cache:
             return self._cache[key]
 
+        cache_key = (self.profile_version, *key)
+        if self.shared_cache is not None:
+            found, raw = self.shared_cache.profiles.get(cache_key)
+            if found and raw is not None:
+                self.shared_cache_hits += 1
+                profile, direction_parent, route_parent, network_parent = raw
+                parent_values = {
+                    ("route_direction", route_id, -1 if direction_id is None else direction_id): direction_parent,
+                    ("route", route_id, -1): route_parent,
+                    ("network", "*", -1): network_parent,
+                }
+                selection = self._select(
+                    route_id, direction_id, profile,
+                    lambda level, route, direction: parent_values.get((
+                        level, route or "*", -1 if direction is None else direction
+                    )),
+                )
+                self._cache[key] = selection
+                return selection
+            self.shared_cache_misses += 1
+
         profile = self.database.profile(route_id, direction_id, window)
+        fallback_lookup = getattr(self.database, "fallback_profile", lambda *args: None)
+        direction_parent = fallback_lookup("route_direction", route_id, direction_id)
+        route_parent = fallback_lookup("route", route_id, None)
+        network_parent = fallback_lookup("network", None, None)
+        if self.shared_cache is not None:
+            self.shared_cache.profiles.put(
+                cache_key, (profile, direction_parent, route_parent, network_parent)
+            )
+        parent_values = {
+            ("route_direction", route_id, -1 if direction_id is None else direction_id): direction_parent,
+            ("route", route_id, -1): route_parent,
+            ("network", "*", -1): network_parent,
+        }
         selection = self._select(
             route_id,
             direction_id,
             profile,
-            getattr(self.database, "fallback_profile", lambda *args: None),
+            lambda level, route, direction: parent_values.get((
+                level, route or "*", -1 if direction is None else direction
+            )),
         )
         self._cache[key] = selection
         return selection

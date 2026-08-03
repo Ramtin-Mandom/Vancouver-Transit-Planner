@@ -12,6 +12,7 @@ from src.reliability.policy import DEFAULT_MINIMUM_SAMPLES
 
 from src.routing.cli import parse_gtfs_time
 from src.routing.route_results import RoutingPreferences
+from src.routing.cache import DEFAULT_ROUTING_CACHE_MODE
 
 
 class ApiModel(BaseModel):
@@ -69,6 +70,14 @@ class SearchTimingResponse(ApiModel):
 
 
 class SearchDiagnosticTimingsResponse(ApiModel):
+    gtfs_version_lookup_ms: float = 0.0
+    static_snapshot_build_ms: float = 0.0
+    daily_departure_index_build_ms: float = 0.0
+    daily_departure_query_ms: float = 0.0
+    daily_departure_grouping_ms: float = 0.0
+    daily_departure_sorting_ms: float = 0.0
+    skytrain_preload_ms: float = 0.0
+    reliability_snapshot_build_ms: float = 0.0
     index_building_ms: float = 0.0
     initial_preload_ms: float = 0.0
     eager_trip_preload_ms: float = 0.0
@@ -157,6 +166,22 @@ class SearchDiagnosticCountersResponse(ApiModel):
 
 
 class SearchCacheStatisticsResponse(ApiModel):
+    first_request_cache_hits: int = 0
+    first_request_cache_misses: int = 0
+    single_flight_wait_count: int = 0
+    trip_request_cache_hits: int = 0
+    trip_shared_cache_hits: int = 0
+    trip_shared_cache_misses: int = 0
+    trip_negative_cache_hits: int = 0
+    daily_index_hits: int = 0
+    daily_index_misses: int = 0
+    reliability_cache_hits: int = 0
+    reliability_cache_misses: int = 0
+    heuristic_cache_hits: int = 0
+    heuristic_cache_misses: int = 0
+    response_cache_hit: bool = False
+    cache_evictions: int = 0
+    shared_cache_memory_estimate_bytes: int = 0
     bulk_departure_query_count: int = 0
     bulk_transfer_query_count: int = 0
     bulk_trip_query_count: int = 0
@@ -207,6 +232,7 @@ class RoutePlanRequest(ApiModel):
     service_date: date
     departure_time: str
     algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
+    cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE
     route_number: int = Field(default=5, ge=1, le=5)
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)

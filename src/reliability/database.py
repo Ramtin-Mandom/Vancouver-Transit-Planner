@@ -462,6 +462,16 @@ class ReliabilityDatabase:
         }
         return exact, fallbacks
 
+    def profile_version(self) -> str:
+        """Return the timestamp published by the last completed aggregation."""
+        query = """
+            SELECT COALESCE(MAX(updated_at)::text, 'no-profiles') AS version
+            FROM transit.route_direction_reliability
+        """
+        with self._profile_lock:
+            row = self._profile_session().execute(query).fetchone()
+        return str(row["version"])
+
     def fallback_profile(
         self, level: str, route_id: str | None, direction_id: int | None
     ) -> dict[str, Any] | None:

@@ -7,11 +7,14 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import timedelta
 from sys import getsizeof
+from types import MappingProxyType
+from typing import Mapping
 from typing import Any
 from collections.abc import Collection, Sequence
 from time import perf_counter
 
 from .models import Connection
+from .cache import RoutingCacheManager
 
 DEFAULT_FRONTIER_TRIP_BATCH_SIZE = 256
 
@@ -19,10 +22,15 @@ DEFAULT_FRONTIER_TRIP_BATCH_SIZE = 256
 class RequestTripConnectionLoader:
     """Request-local, deduplicating frontier loader for complete trip chains."""
 
-    def __init__(self, repository: Any, *, batch_size: int = DEFAULT_FRONTIER_TRIP_BATCH_SIZE):
+    def __init__(
+        self, repository: Any, *, batch_size: int = DEFAULT_FRONTIER_TRIP_BATCH_SIZE,
+        shared_cache: RoutingCacheManager | None = None, gtfs_version: str = "unknown",
+    ):
         self.repository = repository
         self.batch_size = max(1, batch_size)
         self._connections: dict[str, tuple[Connection, ...]] = {}
+        self.shared_cache = shared_cache
+        self.gtfs_version = gtfs_version
         self.loaded_trip_ids: set[str] = set()
         self.known_empty_trip_ids: set[str] = set()
         self.pending_trip_ids: set[str] = set()
@@ -30,13 +38,37 @@ class RequestTripConnectionLoader:
         self.batch_sizes: list[int] = []
         self.query_count = 0
         self.repeated_fetch_attempts = 0
+        self.request_cache_hits = 0
+        self.shared_cache_hits = 0
+        self.shared_cache_misses = 0
+        self.negative_cache_hits = 0
         self.connections_loaded = 0
         self.query_ms = 0.0
         self.indexing_ms = 0.0
 
     def ensure_loaded(self, trip_ids: Collection[str]) -> None:
         requested = set(trip_ids)
+        self.request_cache_hits += len(requested & self.loaded_trip_ids)
         missing = sorted(requested - self.loaded_trip_ids - self.failed_trip_ids)
+        if self.shared_cache is not None:
+            database_missing: list[str] = []
+            for trip_id in missing:
+                before = self.shared_cache.trips.statistics().negative_hits
+                found, cached = self.shared_cache.trips.get((self.gtfs_version, trip_id))
+                if found:
+                    ordered = tuple(cached or ())
+                    self._connections[trip_id] = ordered
+                    self.loaded_trip_ids.add(trip_id)
+                    self.shared_cache_hits += 1
+                    if not ordered:
+                        self.known_empty_trip_ids.add(trip_id)
+                        self.negative_cache_hits += (
+                            self.shared_cache.trips.statistics().negative_hits - before
+                        )
+                else:
+                    self.shared_cache_misses += 1
+                    database_missing.append(trip_id)
+            missing = database_missing
         self.pending_trip_ids.update(missing)
         while missing:
             batch = missing[:self.batch_size]
@@ -63,6 +95,15 @@ class RequestTripConnectionLoader:
                     key=lambda item: item.from_stop_sequence,
                 ))
                 self._connections[trip_id] = ordered
+                if self.shared_cache is not None:
+                    self.shared_cache.trips.put(
+                        (self.gtfs_version, trip_id), ordered,
+                        ttl_seconds=(
+                            self.shared_cache.configuration.negative_trip_ttl_seconds
+                            if not ordered else None
+                        ),
+                        negative=not ordered,
+                    )
                 self.loaded_trip_ids.add(trip_id)
                 if not ordered:
                     self.known_empty_trip_ids.add(trip_id)
@@ -93,11 +134,11 @@ class RequestTripConnectionLoader:
 
 @dataclass(frozen=True)
 class SearchDataIndex:
-    departures_by_stop: dict[str, tuple[Connection, ...]]
-    departure_times_by_stop: dict[str, tuple[timedelta, ...]]
-    connections_by_trip: dict[str, tuple[Connection, ...]]
-    connection_sequences_by_trip: dict[str, tuple[int, ...]]
-    transfers_by_stop: dict[str, tuple[dict[str, Any], ...]]
+    departures_by_stop: Mapping[str, tuple[Connection, ...]]
+    departure_times_by_stop: Mapping[str, tuple[timedelta, ...]]
+    connections_by_trip: Mapping[str, tuple[Connection, ...]]
+    connection_sequences_by_trip: Mapping[str, tuple[int, ...]]
+    transfers_by_stop: Mapping[str, tuple[Mapping[str, Any], ...]]
     memory_estimate_bytes: int
 
     @classmethod
@@ -107,9 +148,28 @@ class SearchDataIndex:
         connections: list[Connection],
         transfers: list[dict[str, Any]],
     ) -> "SearchDataIndex":
+        return cls.build_profiled(departures, connections, transfers)[0]
+
+    @classmethod
+    def build_profiled(
+        cls,
+        departures: list[Connection],
+        connections: list[Connection],
+        transfers: list[dict[str, Any]],
+    ) -> tuple["SearchDataIndex", dict[str, float]]:
+        grouping_started = perf_counter()
         departure_groups: dict[str, list[Connection]] = defaultdict(list)
         for item in departures:
             departure_groups[item.from_stop_id].append(item)
+        trip_groups: dict[str, list[Connection]] = defaultdict(list)
+        for item in connections:
+            trip_groups[item.trip_id].append(item)
+        transfer_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in transfers:
+            transfer_groups[item["from_stop_id"]].append(item)
+        grouping_ms = (perf_counter() - grouping_started) * 1000
+
+        sorting_started = perf_counter()
         departure_index = {
             stop_id: tuple(sorted(items, key=lambda item: (
                 item.departure_time, item.trip_id, item.from_stop_sequence
@@ -117,40 +177,37 @@ class SearchDataIndex:
             for stop_id, items in departure_groups.items()
         }
 
-        trip_groups: dict[str, list[Connection]] = defaultdict(list)
-        for item in connections:
-            trip_groups[item.trip_id].append(item)
         trip_index = {
             trip_id: tuple(sorted(items, key=lambda item: item.from_stop_sequence))
             for trip_id, items in trip_groups.items()
         }
 
-        transfer_groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in transfers:
-            transfer_groups[item["from_stop_id"]].append(item)
         transfer_index = {
-            stop_id: tuple(items) for stop_id, items in transfer_groups.items()
+            stop_id: tuple(MappingProxyType(dict(item)) for item in items)
+            for stop_id, items in transfer_groups.items()
         }
+        sorting_ms = (perf_counter() - sorting_started) * 1000
         estimate = (
             getsizeof(departures) + getsizeof(connections) + getsizeof(transfers)
             + sum(getsizeof(item) for item in departures)
             + sum(getsizeof(item) for item in connections)
             + sum(getsizeof(item) for item in transfers)
         )
-        return cls(
-            departure_index,
-            {
+        index = cls(
+            MappingProxyType(departure_index),
+            MappingProxyType({
                 stop_id: tuple(item.departure_time for item in items)
                 for stop_id, items in departure_index.items()
-            },
-            trip_index,
-            {
+            }),
+            MappingProxyType(trip_index),
+            MappingProxyType({
                 trip_id: tuple(item.from_stop_sequence for item in items)
                 for trip_id, items in trip_index.items()
-            },
-            transfer_index,
+            }),
+            MappingProxyType(transfer_index),
             estimate,
         )
+        return index, {"grouping_ms": grouping_ms, "sorting_ms": sorting_ms}
 
     def departures(
         self, stop_id: str, earliest: timedelta, latest: timedelta
@@ -166,5 +223,5 @@ class SearchDataIndex:
         sequences = self.connection_sequences_by_trip.get(trip_id, ())
         return items[bisect_left(sequences, from_stop_sequence):]
 
-    def transfers(self, stop_id: str) -> tuple[dict[str, Any], ...]:
+    def transfers(self, stop_id: str) -> tuple[Mapping[str, Any], ...]:
         return self.transfers_by_stop.get(stop_id, ())
