@@ -57,6 +57,30 @@ def test_profile_lookup_reads_materialized_profiles():
     )[0]
 
 
+def test_exact_profiles_group_dates_into_shared_time_windows():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "src" / "reliability" / "database.py").read_text(
+        encoding="utf-8"
+    )
+    exact = source[source.index('        rebuild_exact = """'):source.index(
+        '        count_latest = """'
+    )]
+    assert "GROUP BY route_id, direction_id, time_window" in exact
+    assert "GROUP BY route_id, direction_id, time_window, service_date" not in exact
+
+
+def test_profile_lookup_has_no_date_or_weekday_predicate():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "src" / "reliability" / "database.py").read_text(
+        encoding="utf-8"
+    )
+    lookup = source[source.index("    def profile("):source.index(
+        "    def bulk_profile_data("
+    )]
+    assert "AND service_date" not in lookup
+    assert "AND weekday" not in lookup
+
+
 def test_duplicate_snapshot_count_uses_batch_insert_result():
     class Cursor:
         rowcount = 1

@@ -110,6 +110,13 @@ input:not([type="range"]), select {
 input:hover, select:hover { border-color: #9fb3b8; }
 input:focus, select:focus { border-color: var(--teal); outline: 3px solid rgba(8,127,119,.11); }
 input[aria-invalid="true"] { border-color: #b94c3a; }
+input:disabled {
+  color: #5f6f75;
+  background: #e8edef;
+  border-color: #b8c3c7;
+  cursor: not-allowed;
+}
+.unavailableStatus { color: #5f6f75 !important; font-weight: 600; }
 .inputShell {
   height: 46px; display: flex; align-items: center; gap: 9px; padding: 0 11px;
   border: 1px solid #cbd7d9; border-radius: 10px; background: #fbfcfc;

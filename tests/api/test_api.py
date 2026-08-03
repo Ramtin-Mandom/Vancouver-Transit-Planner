@@ -128,12 +128,17 @@ def client(api_services):
     app.state.services = None
 
 
+@pytest.fixture(autouse=True)
+def fixed_vancouver_service_date(monkeypatch):
+    monkeypatch.setattr("src.api.main.current_service_date", lambda: date(2026, 7, 27))
+
+
 def valid_request(**overrides):
     payload = {
         "origin_stop_id": "646",
         "destination_stop_id": "31",
-        "service_date": "2026-07-27",
         "departure_time": "08:00:00",
+        "algorithm": "mc_raptor",
         "route_number": 5,
         "minimum_samples": 20,
         "max_extra_minutes": 30,
@@ -226,6 +231,15 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
         },
     ]
     assert body["diagnostics"] is None
+    assert api_services.planner.calls[-1][0][2] == date(2026, 7, 27)
+
+
+def test_public_route_request_rejects_user_service_date(client):
+    response = client.post(
+        "/routes/plan",
+        json=valid_request(service_date="2026-08-01"),
+    )
+    assert response.status_code == 422
 
 
 def test_route_request_can_select_request_local_cache_mode(client, api_services):

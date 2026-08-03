@@ -35,6 +35,18 @@ async function selectBoth() {
 }
 
 describe("TripPlannerForm", () => {
+  it("shows an unavailable date control without submitting a date", async () => {
+    const onSubmit = vi.fn();
+    render(<TripPlannerForm loading={false} onSubmit={onSubmit} />);
+    const date = screen.getByLabelText("Travel date");
+    expect(date).toBeDisabled();
+    expect(date).toHaveAccessibleDescription("Feature not implemented");
+    await selectBoth();
+    await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
+    expect(onSubmit).toHaveBeenCalledOnce();
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("service_date");
+  });
+
   it("uses default 50/50 priorities", () => {
     render(<TripPlannerForm loading={false} onSubmit={() => undefined} />);
     expect(screen.getByText("Reliability").parentElement).toHaveTextContent("50%");

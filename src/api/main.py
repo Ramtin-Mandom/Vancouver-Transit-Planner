@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from src.data_ingestion.config import ConfigurationError
 from src.reliability.profiles import ProfileResolver
 from src.routing.reliable import ReliableSearchTimeout
+from src.routing.service_date import current_service_date
 
 from .dependencies import (
     ApiServices,
@@ -230,6 +231,9 @@ def plan_routes(
     request: RoutePlanRequest,
     services: ApiServices = Depends(get_services),
 ) -> RoutePlanResponse:
+    # The public API does not expose future-date planning yet. Timetable logic
+    # still receives an internal Vancouver-local GTFS service date.
+    service_date = current_service_date()
     origin = services.transit_database.find_stop(request.origin_stop_id)
     if origin is None:
         raise HTTPException(
@@ -261,7 +265,7 @@ def plan_routes(
     result = services.planner.get_ranked_route_result(
         request.origin_stop_id,
         request.destination_stop_id,
-        request.service_date,
+        service_date,
         departure_time,
         resolver,
         algorithm=request.algorithm,
@@ -276,6 +280,6 @@ def plan_routes(
         result,
         origin,
         destination,
-        request.service_date,
+        service_date,
         departure_time,
     )

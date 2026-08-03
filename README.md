@@ -206,7 +206,6 @@ Invoke-RestMethod `
   -Body '{
     "origin_stop_id": "646",
     "destination_stop_id": "31",
-    "service_date": "2026-07-27",
     "departure_time": "08:00:00",
     "route_number": 5,
     "minimum_samples": 10,
@@ -219,6 +218,11 @@ Invoke-RestMethod `
 ```
 
 GTFS departure times beyond midnight, such as `25:10:00`, are supported.
+The public request does not accept a travel date yet. The server derives the
+internal GTFS `service_date` from the current `America/Vancouver` calendar date;
+that internal date still controls service calendars, exceptions, daily indexes,
+and timetable-dependent response caching. Reliability profiles are shared
+across dates and use `route_id + direction_id + time_window`.
 Local frontend CORS defaults to explicit `localhost` and `127.0.0.1` origins
 on ports 3000 and 5173. Override them with a comma-separated
 `API_CORS_ORIGINS` environment variable.
