@@ -812,7 +812,66 @@ python -m pytest -m "not integration" -v
 python -m pytest -m integration -s
 ```
 
-### Routing cache architecture, cold-start optimization, and configuration
+### Memory-safe routing cache defaults (512 MB Render service)
+
+Production runs exactly one application worker:
+
+```bash
+uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+```
+
+A Render service instance and an application worker are different concepts.
+Each instance can run one or more workers, and every worker owns an independent
+Python heap and cache manager. `render.yaml` fixes both the Uvicorn worker count
+and `WEB_CONCURRENCY` at one to prevent cache duplication.
+
+The shared request path no longer constructs a complete network-wide daily
+departure index. Departures are loaded only when a search frontier reaches a
+stop, under `(gtfs_version, service_date, stop_id)`. Each immutable entry keeps
+sorted connections plus parallel `timedelta` values for binary search. This
+preserves active-service and `calendar_dates` filtering and GTFS times beyond
+`24:00`. Entries use bounded LRU/TTL storage, request-local deduplication, and
+per-key single-flight loading; database I/O occurs outside the cache lock.
+
+Safe defaults are 750 trip chains, 300 stop/date departure entries, one service
+date, 7,500 heuristic entries, 5,000 reliability-profile entries, and 75 exact
+responses. Startup may warm only the small static stop/transfer snapshot.
+Network daily-index and SkyTrain warming flags are false by default, readiness
+does not wait for optional caches, and bus and rail trip chains both remain
+frontier-driven. If explicitly enabled, SkyTrain warming is capped at 100 trips,
+a configurable two-hour service-time horizon, and a 24 MB cache budget; it is
+intended only for controlled measurement.
+
+Use these Render settings:
+
+```text
+WEB_CONCURRENCY=1
+CACHE_WARMUP_BLOCK_READINESS=false
+CACHE_WARMUP_TODAY_INDEX=false
+CACHE_WARMUP_TOMORROW_INDEX=false
+CACHE_WARMUP_SKYTRAIN=false
+```
+
+On 2026-08-03, the representative `3334` to `1875` A* search at `08:00`
+against the local PostgreSQL feed measured 31.99 MB process-start RSS,
+34.78 MB initialized RSS, 108.31 MB peak RSS, and 106.07 MB warm RSS. The cold
+request was 3,666 ms and the next request 3,417 ms; route signatures were
+identical. The cold/warm runs issued 1,110/997 database queries, retained 604
+trip chains during the search (within the 750-entry bound), and the final
+process cache estimate was 2.15 MB. This deliberately memory-conservative
+300-stop cache evicted entries on this unusually broad 5,303-stop frontier, so
+the remaining tradeoff is higher database traffic on broad cold searches.
+
+The removed implementation, warm-up combinations, and the full bus/rail/
+transfer/overnight matrix were not rerun in the same process: the old code is no
+longer present on this branch, and reporting its historical shallow estimates
+as RSS would be misleading. Use `scripts/benchmark_astar.py`, which now records
+OS process RSS and peak RSS, to collect those deployment-specific comparisons.
+
+The prior measurements below describe the removed full-index implementation
+and are retained only as historical diagnosis; they are not current defaults.
+
+### Historical routing cache architecture and measurements
 
 The routing cache work was completed in two stages: first, bounded shared caches
 were added to reuse slowly changing transit data across requests; second, the

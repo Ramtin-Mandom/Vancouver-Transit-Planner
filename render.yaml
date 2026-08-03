@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: vancouver-transit-planner
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+    envVars:
+      - key: WEB_CONCURRENCY
+        value: "1"
+      - key: CACHE_WARMUP_TODAY_INDEX
+        value: "false"
+      - key: CACHE_WARMUP_TOMORROW_INDEX
+        value: "false"
+      - key: CACHE_WARMUP_SKYTRAIN
+        value: "false"
+      - key: CACHE_WARMUP_BLOCK_READINESS
+        value: "false"

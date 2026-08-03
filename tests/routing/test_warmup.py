@@ -8,7 +8,7 @@ from src.routing.cache import CacheConfiguration, RoutingCacheManager
 from src.routing.warmup import (
     RoutingWarmupCoordinator,
     WarmupConfiguration,
-    ensure_daily_index,
+    ensure_stop_departures,
 )
 from src.routing.database import TransitDatabase
 from tests.routing.test_planner import at, connection
@@ -43,6 +43,11 @@ class WarmupRepository:
         assert service_ids == {"weekday"}
         return [self.daily_row]
 
+    def daily_departures_from_stop(self, stop_id, *, service_ids):
+        self.daily_queries += 1
+        assert service_ids == {"weekday"}
+        return [self.daily_row] if stop_id == "A" else []
+
     def active_rail_trip_ids(self, service_ids):
         self.rail_queries += 1
         assert service_ids == {"weekday"}
@@ -57,7 +62,7 @@ def cache():
     return RoutingCacheManager(CacheConfiguration(response_enabled=False))
 
 
-def test_warmup_builds_once_and_skytrain_uses_existing_trip_cache():
+def test_default_warmup_avoids_daily_index_and_skytrain_preload():
     repository = WarmupRepository()
     shared = cache()
     coordinator = RoutingWarmupCoordinator(
@@ -66,16 +71,13 @@ def test_warmup_builds_once_and_skytrain_uses_existing_trip_cache():
     first = coordinator.warm_essential(TODAY)
     second = coordinator.warm_essential(TODAY)
     assert first.ready and second.ready
-    assert repository.daily_queries == 1
-    assert repository.rail_queries == 1
-    assert repository.trip_queries == 1
-    assert shared.trips.get(("feed-1", "RAIL"))[0]
-    assert shared.daily_indexes.get(("feed-1", TODAY))[1].departures(
-        "A", at(25), at(26)
-    ) == (repository.daily_row,)
+    assert repository.daily_queries == 0
+    assert repository.rail_queries == 0
+    assert repository.trip_queries == 0
+    assert not shared.trips.get(("feed-1", "RAIL"))[0]
 
 
-def test_concurrent_daily_and_skytrain_warmup_are_single_flight():
+def test_concurrent_stop_departure_load_is_single_flight():
     repository = WarmupRepository()
     shared = cache()
     coordinator = RoutingWarmupCoordinator(
@@ -83,15 +85,33 @@ def test_concurrent_daily_and_skytrain_warmup_are_single_flight():
     )
     with ThreadPoolExecutor(max_workers=6) as executor:
         list(executor.map(
-            lambda _: ensure_daily_index(shared, repository, "feed-1", TODAY),
+            lambda _: ensure_stop_departures(
+                shared, repository, "feed-1", TODAY, "A", {"weekday"}
+            ),
             range(12),
         ))
     assert repository.daily_queries == 1
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        list(executor.map(
-            lambda _: coordinator.warm_skytrain("feed-1", TODAY), range(12)
-        ))
-    assert repository.trip_queries == 1
+    found, cached = shared.departures.get(("feed-1", TODAY, "A"))
+    assert found and cached.window(at(25), at(26)) == (repository.daily_row,)
+
+
+def test_optional_skytrain_warmup_respects_trip_limit():
+    repository = WarmupRepository()
+    repository.active_rail_trip_ids = lambda services: (1, {"A", "B", "C"})
+    loaded = []
+
+    def load(trip_ids, *, batch_size):
+        loaded.extend(trip_ids)
+        return []
+
+    repository.bulk_trip_connections = load
+    coordinator = RoutingWarmupCoordinator(
+        cache(), repository, object(),
+        WarmupConfiguration(skytrain=True, skytrain_max_trips=2),
+    )
+    coordinator.warm_essential(TODAY)
+    assert set(loaded) == {"A", "B"}
+    assert len(loaded) == 2
 
 
 def test_failed_warmup_does_not_publish_partial_static_snapshot():
@@ -108,11 +128,11 @@ def test_failed_warmup_does_not_publish_partial_static_snapshot():
     assert coordinator.state().warmup_failed
 
 
-def test_version_change_builds_distinct_warm_entries():
+def test_version_change_builds_distinct_stop_entries():
     repository = WarmupRepository()
     shared = cache()
-    ensure_daily_index(shared, repository, "feed-1", TODAY)
-    ensure_daily_index(shared, repository, "feed-2", TODAY)
+    ensure_stop_departures(shared, repository, "feed-1", TODAY, "A", {"weekday"})
+    ensure_stop_departures(shared, repository, "feed-2", TODAY, "A", {"weekday"})
     assert repository.daily_queries == 2
 
 

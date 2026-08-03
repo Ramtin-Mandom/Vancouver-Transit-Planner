@@ -293,6 +293,24 @@ class TransitDatabase:
             ).fetchall()
         return [_connection(row) for row in rows]
 
+    def daily_departures_from_stop(
+        self, stop_id: str, *, service_ids: set[str] | None = None
+    ) -> list[Connection]:
+        """Load one stop's service-day departures, retaining GTFS times >24:00."""
+        if service_ids is not None and not service_ids:
+            return []
+        rows: list[Connection] = []
+        offset = 0
+        while True:
+            batch = self.departures_from(
+                stop_id, timedelta(0), limit=256, offset=offset,
+                service_ids=service_ids,
+            )
+            rows.extend(batch)
+            if len(batch) < 256:
+                return rows
+            offset += 256
+
     def bulk_departures_in_window(
         self,
         earliest_time: timedelta,
@@ -564,6 +582,28 @@ class TransitDatabase:
             len({row["route_id"] for row in rows}),
             {row["trip_id"] for row in rows},
         )
+
+    def active_rail_trip_ids_in_window(
+        self, service_ids: set[str], earliest: timedelta, latest: timedelta
+    ) -> tuple[int, set[str]]:
+        """Return active metro trips having a departure in a bounded horizon."""
+        if not service_ids:
+            return 0, set()
+        query = """
+            SELECT DISTINCT trip.trip_id, trip.route_id
+            FROM transit.trips AS trip
+            JOIN transit.routes AS route ON route.route_id = trip.route_id
+            JOIN transit.stop_times AS stop_time ON stop_time.trip_id = trip.trip_id
+            WHERE route.route_type = 1
+              AND trip.service_id = ANY(%s::text[])
+              AND stop_time.departure_time BETWEEN %s AND %s
+            ORDER BY trip.route_id, trip.trip_id
+        """
+        with self._connection() as connection:
+            rows = connection.execute(
+                query, (sorted(service_ids), earliest, latest)
+            ).fetchall()
+        return len({row["route_id"] for row in rows}), {row["trip_id"] for row in rows}
 
     def integration_case_rows(self, limit: int) -> list[dict[str, Any]]:
         """Select deterministic real journeys and one valid service date each."""

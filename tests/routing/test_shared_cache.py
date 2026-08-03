@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+import gc
+import weakref
 
 from src.routing.cache import BoundedTTLCache, CacheConfiguration, RoutingCacheManager
 from src.routing.search_data import RequestTripConnectionLoader, SearchDataIndex
@@ -19,6 +21,20 @@ def test_lru_capacity_and_eviction_are_measurable():
     cache.put("c", 3)
     assert cache.get("b") == (False, None)
     assert cache.statistics().evictions == 1
+
+
+def test_eviction_releases_the_cached_value_reference():
+    class Value:
+        pass
+
+    cache = BoundedTTLCache[str, Value](1, 60)
+    value = Value()
+    reference = weakref.ref(value)
+    cache.put("old", value)
+    del value
+    cache.put("new", Value())
+    gc.collect()
+    assert reference() is None
 
 
 def test_trip_cache_reuses_rows_and_versions_make_old_entries_unreachable():
@@ -74,12 +90,12 @@ def test_single_flight_never_publishes_partial_values():
 
         def load():
             nonlocal builds
-            found, value = shared.daily_indexes.get(("v1", "date"))
+            found, value = shared.departures.get(("v1", "date", "A"))
             if found:
                 return value
             builds += 1
             value = tuple(range(100))
-            shared.daily_indexes.put(("v1", "date"), value)
+            shared.departures.put(("v1", "date", "A"), value)
             return value
 
         return shared.single_flight("daily", ("v1", "date"), load)

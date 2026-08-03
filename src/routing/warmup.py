@@ -4,35 +4,49 @@ from __future__ import annotations
 
 import logging
 import os
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from threading import Event, RLock
 from time import perf_counter
+from sys import getsizeof
 from types import MappingProxyType
 from typing import Any
 
-from .cache import RoutingCacheManager, _enabled, _positive_float
-from .search_data import RequestTripConnectionLoader, SearchDataIndex
+from .cache import (
+    RoutingCacheManager, _enabled, _nonnegative_int, _positive_float,
+    _positive_int,
+)
+from .models import Connection
+from .search_data import RequestTripConnectionLoader
 from .service_date import current_service_date
 
 logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class WarmupConfiguration:
     enabled: bool = True
-    block_readiness: bool = True
-    today_index: bool = True
-    skytrain: bool = True
+    block_readiness: bool = False
+    today_index: bool = False
+    skytrain: bool = False
     tomorrow_index: bool = False
+    skytrain_max_trips: int = 100
+    skytrain_start_minutes: int = 0
+    skytrain_horizon_minutes: int = 120
+    skytrain_memory_budget_mb: int = 24
     timeout_seconds: float = 30.0
 
     @classmethod
     def from_environment(cls) -> "WarmupConfiguration":
         return cls(
             enabled=_enabled("CACHE_WARMUP_ENABLED", True),
-            block_readiness=_enabled("CACHE_WARMUP_BLOCK_READINESS", True),
-            today_index=_enabled("CACHE_WARMUP_TODAY_INDEX", True),
-            skytrain=_enabled("CACHE_WARMUP_SKYTRAIN", True),
+            block_readiness=_enabled("CACHE_WARMUP_BLOCK_READINESS", False),
+            today_index=_enabled("CACHE_WARMUP_TODAY_INDEX", False),
+            skytrain=_enabled("CACHE_WARMUP_SKYTRAIN", False),
             tomorrow_index=_enabled("CACHE_WARMUP_TOMORROW_INDEX", False),
+            skytrain_max_trips=_positive_int("CACHE_WARMUP_SKYTRAIN_MAX_TRIPS", 100),
+            skytrain_start_minutes=_nonnegative_int("CACHE_WARMUP_SKYTRAIN_START_MINUTES", 0),
+            skytrain_horizon_minutes=_positive_int("CACHE_WARMUP_SKYTRAIN_HORIZON_MINUTES", 120),
+            skytrain_memory_budget_mb=_positive_int("CACHE_WARMUP_SKYTRAIN_MEMORY_BUDGET_MB", 24),
             timeout_seconds=_positive_float("CACHE_WARMUP_TIMEOUT_SECONDS", 30),
         )
 
@@ -85,41 +99,55 @@ def ensure_static_snapshot(
     return cache.single_flight("static", gtfs_version, build)
 
 
-def ensure_daily_index(
+@dataclass(frozen=True)
+class StopDepartureIndex:
+    values: tuple[Connection, ...]
+    times: tuple[timedelta, ...]
+    memory_estimate_bytes: int
+
+    def window(self, earliest: timedelta, latest: timedelta) -> tuple[Connection, ...]:
+        return self.values[bisect_left(self.times, earliest):bisect_right(self.times, latest)]
+
+
+def ensure_stop_departures(
     cache: RoutingCacheManager, database: Any, gtfs_version: str,
-    service_date: date,
-) -> tuple[SearchDataIndex, dict[str, float]]:
-    key = (gtfs_version, service_date)
-    found, value = cache.daily_indexes.get(key)
+    service_date: date, stop_id: str, service_ids: set[str] | None,
+) -> tuple[StopDepartureIndex, float]:
+    key = (gtfs_version, service_date, stop_id)
+    found, value = cache.departures.get(key)
     if found:
-        return value, {"total_ms": 0.0, "query_ms": 0.0, "grouping_ms": 0.0, "sorting_ms": 0.0}
+        return value, 0.0
 
     def build():
-        found_again, cached = cache.daily_indexes.get(key)
+        found_again, cached = cache.departures.get(key)
         if found_again:
-            return cached, {"total_ms": 0.0, "query_ms": 0.0, "grouping_ms": 0.0, "sorting_ms": 0.0}
+            return cached, 0.0
         started = perf_counter()
-        service_found, services = cache.service_days.get(key)
-        if not service_found:
-            services = frozenset(database.active_service_ids(service_date))
-            cache.service_days.put(key, services)
-        static, _ = ensure_static_snapshot(cache, database, gtfs_version)
-        query_started = perf_counter()
-        departures = database.bulk_daily_departures(service_ids=set(services or ()))
-        query_ms = (perf_counter() - query_started) * 1000
-        index, index_timings = SearchDataIndex.build_profiled(
-            departures, [], list(static[1])
+        loader = getattr(database, "daily_departures_from_stop", None)
+        if callable(loader):
+            rows = loader(stop_id, service_ids=service_ids)
+        else:
+            rows, offset = [], 0
+            while True:
+                batch = database.departures_from(
+                    stop_id, timedelta(0), limit=256, offset=offset,
+                    service_ids=service_ids,
+                )
+                rows.extend(batch)
+                if len(batch) < 256:
+                    break
+                offset += 256
+        ordered = tuple(sorted(rows, key=lambda item: (
+            item.departure_time, item.trip_id, item.from_stop_sequence
+        )))
+        value = StopDepartureIndex(
+            ordered, tuple(item.departure_time for item in ordered),
+            getsizeof(ordered) + sum(getsizeof(item) for item in ordered),
         )
-        cache.daily_indexes.put(key, index)
-        total_ms = (perf_counter() - started) * 1000
-        cache.record_daily_build(total_ms, len(departures))
-        return index, {
-            "total_ms": total_ms,
-            "query_ms": query_ms,
-            **index_timings,
-        }
+        cache.departures.put(key, value)
+        return value, (perf_counter() - started) * 1000
 
-    return cache.single_flight("daily", key, build)
+    return cache.single_flight("departure", key, build)
 
 
 class RoutingWarmupCoordinator:
@@ -131,7 +159,8 @@ class RoutingWarmupCoordinator:
         self.transit_database = transit_database
         self.reliability_database = reliability_database
         self.configuration = configuration or WarmupConfiguration.from_environment()
-        self._state = WarmupState(ready=not self.configuration.enabled)
+        # Optional cache construction never gates API readiness.
+        self._state = WarmupState(ready=True)
         self._state_lock = RLock()
         self._stop = Event()
 
@@ -160,12 +189,8 @@ class RoutingWarmupCoordinator:
             phase = "static_snapshot"
             _, static_ms = ensure_static_snapshot(self.cache, self.transit_database, version)
             daily_ms = 0.0
-            if self.configuration.today_index and not self._stop.is_set():
-                phase = "daily_index"
-                _, timings = ensure_daily_index(
-                    self.cache, self.transit_database, version, service_date
-                )
-                daily_ms = timings["total_ms"]
+            # The legacy today-index flag is accepted but intentionally does
+            # not recreate the removed network-wide daily index.
             self._update(
                 ready=True,
                 essential_warmup_complete=True,
@@ -182,7 +207,7 @@ class RoutingWarmupCoordinator:
         except Exception:
             logger.exception("Routing cache warm-up failed during %s", phase)
             self._update(
-                ready=False,
+                ready=True,
                 warmup_failed=True,
                 failure_phase=phase,
                 warmup_total_ms=(perf_counter() - started) * 1000,
@@ -206,15 +231,33 @@ class RoutingWarmupCoordinator:
             if not service_found:
                 services = frozenset(self.transit_database.active_service_ids(service_date))
                 self.cache.service_days.put(key, services)
-            route_count, trip_ids = self.transit_database.active_rail_trip_ids(
-                set(services or ())
+            window_loader = getattr(
+                self.transit_database, "active_rail_trip_ids_in_window", None
             )
+            if callable(window_loader):
+                earliest = timedelta(minutes=self.configuration.skytrain_start_minutes)
+                route_count, trip_ids = window_loader(
+                    set(services or ()), earliest,
+                    earliest + timedelta(minutes=self.configuration.skytrain_horizon_minutes),
+                )
+            else:
+                route_count, trip_ids = self.transit_database.active_rail_trip_ids(
+                    set(services or ())
+                )
+            trip_ids = set(sorted(trip_ids)[:self.configuration.skytrain_max_trips])
             before = self.cache.memory_estimate_bytes()
             loader = RequestTripConnectionLoader(
                 self.transit_database, shared_cache=self.cache,
                 gtfs_version=gtfs_version,
             )
             loader.ensure_loaded(trip_ids)
+            memory_used = max(0, self.cache.memory_estimate_bytes() - before)
+            if memory_used > self.configuration.skytrain_memory_budget_mb * 1024 * 1024:
+                for trip_id in trip_ids:
+                    self.cache.trips.remove_where(
+                        lambda key, trip_id=trip_id: key == (gtfs_version, trip_id)
+                    )
+                raise MemoryError("SkyTrain warm-up exceeded its cache memory budget")
             self._update(
                 skytrain_warmup_complete=True,
                 skytrain_warmup_ms=(perf_counter() - started) * 1000,
@@ -222,9 +265,7 @@ class RoutingWarmupCoordinator:
                 skytrain_active_trips=len(trip_ids),
                 skytrain_connections_loaded=loader.connections_loaded,
                 skytrain_cache_entries=len(loader.loaded_trip_ids),
-                skytrain_cache_memory_bytes=max(
-                    0, self.cache.memory_estimate_bytes() - before
-                ),
+                skytrain_cache_memory_bytes=memory_used,
             )
             self.cache.warmups.put(marker_key, True)
 
@@ -239,9 +280,7 @@ class RoutingWarmupCoordinator:
             tomorrow = current_service_date() + timedelta(days=1)
             if self._stop.is_set():
                 return
-            ensure_daily_index(
-                self.cache, self.transit_database, state.gtfs_version, tomorrow
-            )
+            # Departure entries are loaded only for stops reached by a search.
             if self.configuration.skytrain and not self._stop.is_set():
                 self.warm_skytrain(state.gtfs_version, tomorrow)
         except Exception:

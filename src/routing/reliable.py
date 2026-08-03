@@ -38,7 +38,7 @@ from .route_results import itinerary_identity
 from .reconstruction import build_leg_stops, load_connection_stops
 from .search_data import RequestTripConnectionLoader, SearchDataIndex
 from .cache import RoutingCacheManager
-from .warmup import ensure_daily_index, ensure_static_snapshot
+from .warmup import ensure_static_snapshot, ensure_stop_departures
 
 EPSILON = 1e-9
 DEFAULT_MAX_TRANSFERS = 3
@@ -201,8 +201,8 @@ class ParetoTransitSearch:
                 pass
             if self.cache_manager is not None:
                 shared_stats = self.cache_manager.statistics()
-                caches["daily_index_hits"] = shared_stats["daily_indexes"].hits
-                caches["daily_index_misses"] = shared_stats["daily_indexes"].misses
+                caches["daily_index_hits"] = shared_stats["departures"].hits
+                caches["daily_index_misses"] = shared_stats["departures"].misses
                 caches["reliability_cache_hits"] = shared_stats["profiles"].hits
                 caches["reliability_cache_misses"] = shared_stats["profiles"].misses
                 caches["heuristic_cache_hits"] = shared_stats["heuristics"].hits
@@ -301,10 +301,9 @@ class ParetoTransitSearch:
         bulk_departures = getattr(self.database, "bulk_departures_in_window", None)
         bulk_transfers = getattr(self.database, "bulk_transfers", None)
         bulk_trips = getattr(self.database, "bulk_trip_connections", None)
-        daily_loader = getattr(self.database, "bulk_daily_departures", None)
         used_shared_index = False
         if (
-            self.cache_manager is not None and callable(daily_loader)
+            self.cache_manager is not None
             and callable(bulk_transfers) and callable(bulk_trips)
         ):
             preload_started = perf_counter()
@@ -314,21 +313,10 @@ class ParetoTransitSearch:
             if include_diagnostics:
                 timings["static_snapshot_build_ms"] += static_ms
             loaded_transfers = list(loaded_transfers_tuple)
-            daily_key = (self.gtfs_version, service_date)
-            data_index, daily_timings = ensure_daily_index(
-                self.cache_manager, self.database, self.gtfs_version, service_date
-            )
-            if include_diagnostics:
-                timings["daily_departure_query_ms"] += daily_timings["query_ms"]
-                timings["daily_departure_grouping_ms"] += daily_timings["grouping_ms"]
-                timings["daily_departure_sorting_ms"] += daily_timings["sorting_ms"]
-                timings["daily_departure_index_build_ms"] += daily_timings["total_ms"]
-            loaded_departures = [
-                item for stop_id in data_index.departures_by_stop
-                for item in data_index.departures(stop_id, departure_time, horizon)
-            ]
+            data_index = SearchDataIndex.build([], [], loaded_transfers)
+            loaded_departures = []
             loaded_connections = []
-            trip_ids = {item.trip_id for item in loaded_departures}
+            trip_ids = set()
             frontier_loader = RequestTripConnectionLoader(
                 self.database, shared_cache=self.cache_manager,
                 gtfs_version=self.gtfs_version,
@@ -337,15 +325,7 @@ class ParetoTransitSearch:
             phase_started = perf_counter()
             preload_profiles = getattr(self.resolver, "preload", None)
             profile_query_count = 0
-            if callable(preload_profiles):
-                profile_keys = {
-                    (item.route_id, item.direction_id, window_name)
-                    for item in loaded_departures
-                    for window_name, _, _ in TIME_WINDOWS
-                }
-                profile_query_count = preload_profiles(profile_keys)
-                if include_diagnostics:
-                    caches["bulk_profile_query_count"] = profile_query_count
+            # Profiles remain lazy because departure stops are frontier-driven.
             if include_diagnostics:
                 profile_ms = (perf_counter() - phase_started) * 1000
                 timings["reliability_preload_ms"] = profile_ms
@@ -468,6 +448,26 @@ class ParetoTransitSearch:
 
         def departures(stop_id: str) -> list[Connection]:
             check_deadline()
+            if used_shared_index:
+                if stop_id in departure_cache:
+                    if include_diagnostics:
+                        caches["departure_cache_hits"] += 1
+                    return departure_cache[stop_id]
+                before = self.cache_manager.departures.statistics()
+                index, query_ms = ensure_stop_departures(
+                    self.cache_manager, self.database, self.gtfs_version,
+                    service_date, stop_id, active,
+                )
+                rows = list(index.window(departure_time, horizon))
+                departure_cache[stop_id] = rows
+                if include_diagnostics:
+                    after = self.cache_manager.departures.statistics()
+                    caches["departure_cache_hits"] += after.hits - before.hits
+                    caches["departure_cache_misses"] += after.misses - before.misses
+                    caches["departure_query_count"] += int(query_ms > 0)
+                    caches["departure_rows_loaded"] += len(index.values) if query_ms > 0 else 0
+                    timings["departure_queries_ms"] += query_ms
+                return rows
             if data_index is not None:
                 if include_diagnostics:
                     caches["departure_cache_hits"] += 1

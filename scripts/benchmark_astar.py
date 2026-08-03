@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 from datetime import date
 from statistics import median
@@ -19,6 +20,36 @@ from src.routing.cache import (
     CacheConfiguration,
     RoutingCacheManager,
 )
+
+
+def process_memory_mb() -> tuple[float, float]:
+    """Return current RSS and OS-recorded peak RSS for this process."""
+    class Counters(ctypes.Structure):
+        _fields_ = [
+            ("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong),
+            ("PeakWorkingSetSize", ctypes.c_size_t),
+            ("WorkingSetSize", ctypes.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+            ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+            ("PagefileUsage", ctypes.c_size_t),
+            ("PeakPagefileUsage", ctypes.c_size_t),
+        ]
+    counters = Counters()
+    counters.cb = ctypes.sizeof(counters)
+    get_process = ctypes.windll.kernel32.GetCurrentProcess
+    get_process.restype = ctypes.c_void_p
+    get_memory = ctypes.windll.kernel32.K32GetProcessMemoryInfo
+    get_memory.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_ulong]
+    get_memory.restype = ctypes.c_int
+    handle = get_process()
+    if not get_memory(
+        handle, ctypes.byref(counters), counters.cb
+    ):
+        return 0.0, 0.0
+    scale = 1024 * 1024
+    return counters.WorkingSetSize / scale, counters.PeakWorkingSetSize / scale
 
 
 def route_signatures(result):
@@ -127,6 +158,7 @@ def measurement(
 
 
 def main() -> None:
+    process_start_rss_mb, _ = process_memory_mb()
     parser = argparse.ArgumentParser()
     parser.add_argument("--origin", default="3334")
     parser.add_argument("--destination", default="1875")
@@ -155,6 +187,7 @@ def main() -> None:
     transit.initialize()
     reliability = ReliabilityDatabase()
     startup_initialization_ms = (perf_counter() - initialization_started) * 1000
+    initialized_rss_mb, _ = process_memory_mb()
     # Disable the response layer here so the benchmark measures the underlying
     # daily/trip/profile/heuristic caches rather than returning stored timings.
     cache_manager = RoutingCacheManager(CacheConfiguration(response_enabled=False))
@@ -214,6 +247,13 @@ def main() -> None:
             json.dumps(results[name]["route_signatures"], sort_keys=True)
             for name in args.algorithms
         }) == 1
+        warm_rss_mb, peak_rss_mb = process_memory_mb()
+        results["process_memory_mb"] = {
+            "process_start_rss_mb": process_start_rss_mb,
+            "initialized_rss_mb": initialized_rss_mb,
+            "peak_rss_mb": peak_rss_mb,
+            "warm_steady_state_rss_mb": warm_rss_mb,
+        }
         print(json.dumps(results, indent=2))
         if not results["signatures_identical"]:
             raise SystemExit(1)
