@@ -20,7 +20,7 @@ V = TypeVar("V")
 
 # Change this one value to switch the application's default caching path.
 # Individual API requests and benchmark runs can still override it.
-DEFAULT_ROUTING_CACHE_MODE = "shared"  # "shared" or "request"
+DEFAULT_ROUTING_CACHE_MODE = "request"  # "shared" or "request"
 
 
 def _positive_int(name: str, default: int) -> int:

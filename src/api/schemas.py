@@ -114,6 +114,15 @@ class SearchDiagnosticTimingsResponse(ApiModel):
 
 class SearchDiagnosticCountersResponse(ApiModel):
     algorithm: str = "baseline"
+    requested_algorithm: str = "baseline"
+    executed_algorithm: str = "baseline"
+    states_pushed: int = 0
+    states_popped: int = 0
+    states_reopened: int = 0
+    transfer_edges_examined: int = 0
+    heuristic_evaluations: int = 0
+    zero_heuristic_fallbacks: int = 0
+    final_arrival_cost: int = 0
     candidate_trip_ids_from_frontier: int = 0
     unique_frontier_trips_requested: int = 0
     unique_frontier_trips_loaded: int = 0
@@ -232,7 +241,7 @@ class RoutePlanRequest(ApiModel):
     departure_time: str
     algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
     cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE
-    route_number: int = Field(default=5, ge=1, le=5)
+    route_number: int = Field(default=3, ge=1, le=3)
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)
     search_timeout_seconds: float = Field(default=30.0, gt=0, le=120)

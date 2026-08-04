@@ -35,6 +35,14 @@ async function selectBoth() {
 }
 
 describe("TripPlannerForm", () => {
+  it("does not render or submit an alternatives selector", async () => {
+    const onSubmit = vi.fn();
+    render(<TripPlannerForm loading={false} onSubmit={onSubmit} />);
+    expect(screen.queryByLabelText("Alternatives")).not.toBeInTheDocument();
+    await selectBoth();
+    await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
+    expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("route_number");
+  });
   it("shows an unavailable date control without submitting a date", async () => {
     const onSubmit = vi.fn();
     render(<TripPlannerForm loading={false} onSubmit={onSubmit} />);

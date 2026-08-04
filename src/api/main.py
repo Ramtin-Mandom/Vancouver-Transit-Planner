@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import asyncio
+from dataclasses import replace
+from time import perf_counter
 from contextlib import asynccontextmanager
 
 import psycopg
@@ -16,6 +18,7 @@ from src.data_ingestion.config import ConfigurationError
 from src.reliability.profiles import ProfileResolver
 from src.routing.reliable import ReliableSearchTimeout
 from src.routing.service_date import current_service_date
+from src.routing.snapshot import SnapshotError
 
 from .dependencies import (
     ApiServices,
@@ -45,12 +48,18 @@ def configured_cors_origins() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.snapshot_failure = None
     if getattr(app.state, "services", None) is None:
+        started = perf_counter()
         try:
             app.state.services = create_services()
             app.state.owns_services = True
-        except (ConfigurationError, psycopg.Error, OSError):
-            logger.error("API database service initialization failed")
+            snapshot = app.state.services.snapshot
+            if snapshot is not None:
+                logger.info("Routing snapshot loaded", extra={"load_ms": (perf_counter()-started)*1000, "counts": snapshot.manifest["counts"]})
+        except (ConfigurationError, psycopg.Error, OSError, SnapshotError) as exc:
+            logger.error("API routing service initialization failed")
+            app.state.snapshot_failure = str(exc)[:240]
             app.state.services = None
             app.state.owns_services = False
     warmup_task = None
@@ -172,7 +181,21 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-def ready(services: ApiServices = Depends(get_services)) -> dict[str, object]:
+def ready(request: Request) -> dict[str, object]:
+    services = getattr(request.app.state, "services", None)
+    if services is None:
+        return {"ready": False, "snapshot_loaded": False,
+                "reason": getattr(request.app.state, "snapshot_failure", None) or "routing services unavailable"}
+    if services.routing_unavailable_reason is not None:
+        return {"ready": False, "snapshot_loaded": False,
+                "autocomplete_available": True,
+                "reason": services.routing_unavailable_reason}
+    if services.snapshot is not None:
+        manifest = services.snapshot.manifest
+        return {"ready": True, "snapshot_loaded": True,
+                "snapshot_version": manifest["format_version"],
+                "source_version": manifest.get("source_version"),
+                "counts": manifest["counts"]}
     if services.warmup is None:
         return {
             "ready": True,
@@ -231,6 +254,10 @@ def plan_routes(
     request: RoutePlanRequest,
     services: ApiServices = Depends(get_services),
 ) -> RoutePlanResponse:
+    if services.planner is None:
+        raise ServicesUnavailable(
+            services.routing_unavailable_reason or "routing services are unavailable"
+        )
     # The public API does not expose future-date planning yet. Timetable logic
     # still receives an internal Vancouver-local GTFS service date.
     service_date = current_service_date()
@@ -250,18 +277,12 @@ def plan_routes(
         )
 
     departure_time = request.parsed_departure_time()
-    profile_version_lookup = getattr(services.reliability_database, "profile_version", None)
-    profile_version = (
-        str(profile_version_lookup()) if callable(profile_version_lookup) else "unknown"
-    )
-    resolver = ProfileResolver(
-        services.reliability_database,
-        minimum_samples=request.minimum_samples,
-        shared_cache=(
-            services.cache_manager if request.cache_mode == "shared" else None
-        ),
-        profile_version=profile_version,
-    )
+    resolver = None
+    if services.reliability_database is not None:
+        profile_version_lookup = getattr(services.reliability_database, "profile_version", None)
+        profile_version = str(profile_version_lookup()) if callable(profile_version_lookup) else "unknown"
+        resolver = ProfileResolver(services.reliability_database, minimum_samples=request.minimum_samples,
+            shared_cache=(services.cache_manager if request.cache_mode == "shared" else None), profile_version=profile_version)
     result = services.planner.get_ranked_route_result(
         request.origin_stop_id,
         request.destination_stop_id,
@@ -270,12 +291,16 @@ def plan_routes(
         resolver,
         algorithm=request.algorithm,
         cache_mode=request.cache_mode,
+        minimum_samples=request.minimum_samples,
         route_number=request.route_number,
         preferences=request.routing_preferences(),
         max_extra_minutes=request.max_extra_minutes,
         timeout_seconds=request.search_timeout_seconds,
         include_diagnostics=request.include_diagnostics,
     )
+    # Defense in depth: the public endpoint never serializes more than three
+    # candidates, even if a custom planner ignores route_number.
+    result = replace(result, alternatives=result.alternatives[:3])
     return serialize_result(
         result,
         origin,

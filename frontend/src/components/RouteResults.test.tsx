@@ -5,6 +5,21 @@ import { routeResult } from "../test/fixtures";
 import { RouteResults } from "./RouteResults";
 
 describe("RouteResults", () => {
+  it("renders three ranked route cards", () => {
+    const third = {
+      ...routeResult.alternatives[1],
+      rank: 3,
+      legs: routeResult.alternatives[1].legs.map((leg) => ({
+        ...leg, trip_id: `${leg.trip_id}-THIRD`, route_name: "Third route"
+      }))
+    };
+    render(<RouteResults result={{
+      ...routeResult, alternatives: [...routeResult.alternatives, third]
+    }} />);
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByText("Third route")).toBeVisible();
+    expect(screen.getByText(/ranked 3 alternatives/)).toBeVisible();
+  });
   it("preserves backend order and derives fastest/reliable labels", () => {
     render(<RouteResults result={routeResult} />);
     const cards = screen.getAllByRole("article");
@@ -77,5 +92,14 @@ describe("RouteResults", () => {
       <RouteResults result={{ ...routeResult, alternatives: [] }} />
     );
     expect(screen.getByText("No scheduled routes found")).toBeVisible();
+  });
+
+  it("suppresses comparison badges when only one route exists", () => {
+    render(<RouteResults result={{ ...routeResult, alternatives: [routeResult.alternatives[0]] }} />);
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(screen.getByText(/ranked 1 alternative\./)).toBeVisible();
+    expect(screen.queryByText("Fastest")).not.toBeInTheDocument();
+    expect(screen.queryByText("Most reliable")).not.toBeInTheDocument();
+    expect(screen.queryByText("Best overall")).not.toBeInTheDocument();
   });
 });

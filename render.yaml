@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: vancouver-transit-planner-api
+    runtime: python
+    branch: debug
+    buildCommand: bash scripts/render_build.sh
+    startCommand: python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: ROUTING_SNAPSHOT_PATH
+        value: data/routing_snapshot
+      - key: ROUTING_SNAPSHOT_REQUIRED
+        value: "true"
+      - key: ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK
+        value: "false"
+      - key: CACHE_WARMUP_ENABLED
+        value: "false"
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB
+        value: "450"

@@ -137,6 +137,15 @@ class SearchDiagnosticTimings:
 @dataclass(frozen=True)
 class SearchDiagnosticCounters:
     algorithm: str = "baseline"
+    requested_algorithm: str = "baseline"
+    executed_algorithm: str = "baseline"
+    states_pushed: int = 0
+    states_popped: int = 0
+    states_reopened: int = 0
+    transfer_edges_examined: int = 0
+    heuristic_evaluations: int = 0
+    zero_heuristic_fallbacks: int = 0
+    final_arrival_cost: int = 0
     candidate_trip_ids_from_frontier: int = 0
     unique_frontier_trips_requested: int = 0
     unique_frontier_trips_loaded: int = 0

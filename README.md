@@ -4,6 +4,94 @@ A transit planner that imports TransLink GTFS data into PostgreSQL, finds
 scheduled journeys, collects GTFS-Realtime delay observations, and can rank
 route alternatives using historical delay and transfer reliability.
 
+## Production routing snapshot
+
+FastAPI's production default does not query PostgreSQL. Build the artifact
+after each GTFS/reliability refresh, outside the web process:
+
+```powershell
+python -m scripts.build_routing_snapshot --output data/routing_snapshot
+python -m scripts.validate_routing_snapshot data/routing_snapshot
+python -m scripts.benchmark_snapshot data/routing_snapshot --origin STOP_ID --destination STOP_ID
+```
+
+Set `ROUTING_SNAPSHOT_PATH` to the artifact directory and
+`ROUTING_SNAPSHOT_REQUIRED=true`, then run exactly one production worker:
+
+```powershell
+$env:ROUTING_SNAPSHOT_PATH='data/routing_snapshot'
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 1
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+curl 'http://localhost:8000/stops/search?query=Gran&limit=10'
+```
+
+The generated directory is intentionally gitignored. On Render it is generated
+by the normal Build Command, whose filesystem becomes the deployed service;
+no persistent disk or paid pre-deploy command is required. Rebuild/redeploy
+after GTFS changes. `ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK=true` explicitly
+enables the legacy database/cache path for local debugging; it is disabled by
+default and must not be used in production. “Load once” means one prebuilt
+snapshot is loaded by the backend process; React still calls FastAPI for stop
+autocomplete and planning. `/health` only proves liveness; `/ready` reports
+snapshot format, source version, counts, or a concise loading failure.
+
+In snapshot mode, the production array-native earliest-arrival scan is used for
+all accepted API algorithm selector values. The legacy experimental A*,
+Dijkstra, and MC-RAPTOR implementations remain available only through the
+explicit development fallback because they retain Python `Connection` graphs.
+
+### Render deployment
+
+The repository includes `render.yaml` and `scripts/render_build.sh`. In the
+Render Dashboard, create a Blueprint from this repository (or configure an
+equivalent Python Web Service), select the `debug` branch, and use exactly:
+
+```text
+Build Command: bash scripts/render_build.sh
+Start Command: python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 1
+Health Check Path: /health
+```
+
+Enter these database values manually as secret environment variables. They are
+required only while the Build Command reads PostgreSQL; the script checks that
+they exist but never prints their values:
+
+```text
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+```
+
+Use these non-secret environment values (the Blueprint supplies them):
+
+```text
+ROUTING_SNAPSHOT_PATH=data/routing_snapshot
+ROUTING_SNAPSHOT_REQUIRED=true
+ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK=false
+CACHE_WARMUP_ENABLED=false
+ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB=450
+```
+
+The build installs `requirements.txt`, streams timetable rows into a temporary
+disk-backed snapshot, validates the completed artifact, and fails before
+deployment on missing configuration, invalid data, validation errors, or a
+measured peak RSS above the configured limit. It never starts FastAPI. After a
+successful deploy, verify:
+
+```text
+GET https://YOUR-SERVICE.onrender.com/health
+GET https://YOUR-SERVICE.onrender.com/ready
+GET https://YOUR-SERVICE.onrender.com/stops/search?query=Coquitlam&limit=10
+```
+
+`/ready` must contain `"snapshot_loaded": true`. Snapshot-mode autocomplete
+and route planning do not instantiate the PostgreSQL repositories, execute
+timetable SQL, or run the legacy startup cache warm-up. A missing snapshot
+keeps readiness false; production never silently activates the legacy cache.
+
 ## PostgreSQL data ingestion
 
 The project requires Python 3.10+, PostgreSQL, `psycopg` 3, and

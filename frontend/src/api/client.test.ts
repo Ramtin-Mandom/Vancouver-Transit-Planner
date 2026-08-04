@@ -28,7 +28,6 @@ describe("API client", () => {
       origin_stop_id: "646",
       destination_stop_id: "31",
       departure_time: "25:10:00",
-      route_number: 5,
       minimum_samples: 20,
       max_extra_minutes: 30,
       search_timeout_seconds: 30,
@@ -50,12 +49,12 @@ describe("API client", () => {
         ok: false,
         status: 422,
         json: async () => ({
-          detail: [{ loc: ["body", "route_number"], msg: "Input should be less than 6" }]
+          detail: [{ loc: ["body", "route_number"], msg: "Input should be less than 4" }]
         })
       })
     );
     await expect(searchStops("Main")).rejects.toThrow(
-      "route_number: Input should be less than 6"
+      "route_number: Input should be less than 4"
     );
   });
 });

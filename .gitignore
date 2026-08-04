@@ -225,3 +225,6 @@ __marimo__/
 *.dump
 *.backup
 *.sql.gz
+
+# Generated deployment artifact (build outside the FastAPI process)
+data/routing_snapshot/
