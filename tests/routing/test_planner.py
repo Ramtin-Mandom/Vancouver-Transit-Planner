@@ -4,7 +4,6 @@ from src.routing.models import Connection, Stop
 from src.routing.planner import TransitPlanner
 from src.routing.service_calendar import ServiceCalendar
 
-
 MONDAY = date(2026, 7, 27)
 
 
@@ -135,9 +134,7 @@ def test_leg_stop_boundaries_use_sequences_for_repeated_stop_ids():
 
 def test_one_transfer_journey_respects_minimum_transfer_time():
     first = [connection("T1", "weekday", "10", "A", "B", at(8), at(8, 10))]
-    too_early = [
-        connection("T2", "weekday", "20", "B", "C", at(8, 12), at(8, 20))
-    ]
+    too_early = [connection("T2", "weekday", "20", "B", "C", at(8, 12), at(8, 20))]
     valid = [connection("T3", "weekday", "30", "B", "C", at(8, 16), at(8, 25))]
     transfer = {
         "to_stop_id": "B",
@@ -187,11 +184,7 @@ def test_calendar_exception_adds_and_removes_service():
 
 
 def test_gtfs_time_greater_than_24_hours():
-    trip = [
-        connection(
-            "T1", "weekday", "N10", "A", "B", at(25, 10), at(25, 30)
-        )
-    ]
+    trip = [connection("T1", "weekday", "N10", "A", "B", at(25, 10), at(25, 30))]
     result = TransitPlanner(FakeDatabase(stops("A", "B"), {"T1": trip})).plan(
         "A", "B", MONDAY, at(25)
     )
@@ -201,9 +194,7 @@ def test_gtfs_time_greater_than_24_hours():
 
 
 def test_later_departures_are_not_scanned_after_destination_is_reached():
-    first = [
-        connection("EARLY", "weekday", "10", "A", "B", at(8), at(8, 20))
-    ]
+    first = [connection("EARLY", "weekday", "10", "A", "B", at(8), at(8, 20))]
     later_trips = {
         f"LATE-{number}": [
             connection(
@@ -221,9 +212,7 @@ def test_later_departures_are_not_scanned_after_destination_is_reached():
 
     class CountingDatabase(FakeDatabase):
         def __init__(self):
-            super().__init__(
-                stops("A", "B"), {"EARLY": first, **later_trips}
-            )
+            super().__init__(stops("A", "B"), {"EARLY": first, **later_trips})
             self.scanned_trip_ids = []
 
         def trip_connections(self, trip_id, from_stop_sequence):
@@ -239,9 +228,7 @@ def test_later_departures_are_not_scanned_after_destination_is_reached():
 
 
 def test_bulk_active_service_lookup_is_used_when_available():
-    trip = [
-        connection("T1", "inactive", "10", "A", "B", at(8), at(8, 20))
-    ]
+    trip = [connection("T1", "inactive", "10", "A", "B", at(8), at(8, 20))]
 
     class BulkCalendarDatabase(FakeDatabase):
         def active_service_ids(self, service_date):

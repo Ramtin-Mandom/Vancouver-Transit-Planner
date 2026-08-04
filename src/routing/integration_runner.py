@@ -29,8 +29,9 @@ class ReferenceDatabase(Protocol):
 
 
 class Planner(Protocol):
-    def plan(self, origin_stop_id, destination_stop_id, service_date, departure_time):
-        ...
+    def plan(
+        self, origin_stop_id, destination_stop_id, service_date, departure_time
+    ): ...
 
 
 def validate_itinerary(
@@ -45,7 +46,9 @@ def validate_itinerary(
     if itinerary.origin.stop_id != case.origin_stop_id:
         failures.append("itinerary origin does not match the requested origin")
     if itinerary.destination.stop_id != case.destination_stop_id:
-        failures.append("itinerary destination does not match the requested destination")
+        failures.append(
+            "itinerary destination does not match the requested destination"
+        )
     if itinerary.departure_time != requested_departure:
         failures.append("itinerary requested departure time changed")
     if itinerary.arrival_time < requested_departure:
@@ -99,9 +102,7 @@ def run_cases(
     results: list[IntegrationResult] = []
     formatting_seconds = 0.0
     for case in cases:
-        requested = case.departure_time - timedelta(
-            minutes=departure_buffer_minutes
-        )
+        requested = case.departure_time - timedelta(minutes=departure_buffer_minutes)
         case_started = perf_counter()
         itinerary = None
         failures: list[str] = []
@@ -116,9 +117,7 @@ def run_cases(
             )
             elapsed = perf_counter() - route_started
             validation_started = perf_counter()
-            failures.extend(
-                validate_itinerary(database, case, requested, itinerary)
-            )
+            failures.extend(validate_itinerary(database, case, requested, itinerary))
             validation_seconds = perf_counter() - validation_started
             if elapsed > MAX_PLANNER_SECONDS:
                 failures.append(
@@ -221,7 +220,9 @@ def main() -> int:
     except Exception as exc:
         # Case exceptions are handled by run_cases. Reaching here means case
         # discovery or the database connection failed before execution.
-        print(f"Integration database failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(
+            f"Integration database failed: {type(exc).__name__}: {exc}", file=sys.stderr
+        )
         return 2
     return exit_status(summary)
 

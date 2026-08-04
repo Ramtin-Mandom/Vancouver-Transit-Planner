@@ -36,7 +36,7 @@ def test_frontier_loader_batches_orders_deduplicates_and_remembers_empty_trips()
 
     repository = Repository()
     loader = RequestTripConnectionLoader(repository, batch_size=2)
-    loader.ensure_loaded({"T1", "EMPTY", "T1"})
+    loader.ensure_loaded({"T1", "EMPTY"})
     loader.ensure_loaded({"T1", "EMPTY"})
     assert repository.batches == [("EMPTY", "T1")]
     assert [item.from_stop_sequence for item in loader.connections_for("T1")] == [1, 2]

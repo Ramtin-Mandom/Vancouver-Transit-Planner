@@ -8,12 +8,16 @@ import sys
 from pathlib import Path
 
 from .config import DEFAULT_DATA_DIR, ConfigurationError, DatabaseConfig
-from .loader import LoadSummary, TABLES, TransitLoader
+from .loader import TABLES, LoadSummary, TransitLoader
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Load extracted GTFS data into PostgreSQL.")
-    parser.add_argument("--dry-run", action="store_true", help="validate without a database connection")
+    parser = argparse.ArgumentParser(
+        description="Load extracted GTFS data into PostgreSQL."
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="validate without a database connection"
+    )
     parser.add_argument(
         "--replace",
         action="store_true",
@@ -49,7 +53,9 @@ def main() -> int:
     try:
         config = None if args.dry_run else DatabaseConfig.from_environment()
         loader = TransitLoader(args.data_dir.resolve(), config)
-        summary = loader.dry_run() if args.dry_run else loader.load(replace=args.replace)
+        summary = (
+            loader.dry_run() if args.dry_run else loader.load(replace=args.replace)
+        )
     except (ConfigurationError, OSError, RuntimeError, ValueError) as exc:
         print(f"Import failed: {exc}", file=sys.stderr)
         print("Successful tables: none", file=sys.stderr)

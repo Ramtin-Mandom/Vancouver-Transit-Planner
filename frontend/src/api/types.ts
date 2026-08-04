@@ -61,7 +61,7 @@ export interface RoutePlanRequest {
   origin_stop_id: string;
   destination_stop_id: string;
   departure_time: string;
-  algorithm?: "baseline" | "dijkstra" | "astar" | "mc_raptor";
+  algorithm?: "dijkstra" | "astar";
   include_alternatives: boolean;
   minimum_samples: number;
   max_extra_minutes: number;

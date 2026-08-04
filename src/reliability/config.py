@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 from src.data_ingestion.config import PROJECT_ROOT, ConfigurationError
+
 from .classification import (
     EARLY_THRESHOLD_SECONDS,
     LATE_THRESHOLD_SECONDS,
@@ -15,9 +16,7 @@ from .classification import (
 )
 from .policy import DEFAULT_MINIMUM_SAMPLES
 
-DEFAULT_FEED_URL = (
-    "https://gtfsapi.translink.ca/v3/gtfsrealtime?apikey={api_key}"
-)
+DEFAULT_FEED_URL = "https://gtfsapi.translink.ca/v3/gtfsrealtime?apikey={api_key}"
 
 
 @dataclass(frozen=True)
@@ -33,7 +32,7 @@ class ReliabilityConfig:
     shrinkage_strength: float = SHRINKAGE_STRENGTH
 
     @classmethod
-    def from_environment(cls) -> "ReliabilityConfig":
+    def from_environment(cls) -> ReliabilityConfig:
         load_dotenv(PROJECT_ROOT / ".env")
         api_key = os.getenv("TRANSLINK_API_KEY", "").strip()
         if not api_key:
@@ -47,10 +46,12 @@ class ReliabilityConfig:
             )
         try:
             timeout = float(os.getenv("GTFS_RT_TIMEOUT_SECONDS", "20"))
-            minimum = int(os.getenv(
-                "RELIABILITY_MINIMUM_SAMPLES",
-                str(DEFAULT_MINIMUM_SAMPLES),
-            ))
+            minimum = int(
+                os.getenv(
+                    "RELIABILITY_MINIMUM_SAMPLES",
+                    str(DEFAULT_MINIMUM_SAMPLES),
+                )
+            )
             early = int(os.getenv("RELIABILITY_EARLY_SECONDS", "-120"))
             late = int(os.getenv("RELIABILITY_LATE_SECONDS", "300"))
             shrinkage = float(os.getenv("RELIABILITY_SHRINKAGE_STRENGTH", "20"))
@@ -63,7 +64,10 @@ class ReliabilityConfig:
                 "reliability timeout and minimum samples must be positive"
             )
         return cls(
-            api_key, template, timeout, minimum,
+            api_key,
+            template,
+            timeout,
+            minimum,
             early_threshold_seconds=early,
             late_threshold_seconds=late,
             shrinkage_strength=shrinkage,

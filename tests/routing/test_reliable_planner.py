@@ -1,15 +1,14 @@
-from datetime import timedelta
 import time
 
 import pytest
 
 from src.reliability.models import ProfileSelection, ReliabilityProfile
-from src.routing.planner import TransitPlanner
 from src.routing.cache import CacheConfiguration, RoutingCacheManager
+from src.routing.planner import TransitPlanner
 from src.routing.reliable import ReliableSearchTimeout
 from tests.routing.test_planner import (
-    FakeDatabase,
     MONDAY,
+    FakeDatabase,
     at,
     connection,
     stops,
@@ -18,8 +17,19 @@ from tests.routing.test_planner import (
 
 def profile(probability):
     return ReliabilityProfile(
-        None, None, None, None, 100, 0, 0, 0, 0, 0,
-        0, probability, 1 - probability,
+        None,
+        None,
+        None,
+        None,
+        100,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        probability,
+        1 - probability,
     )
 
 
@@ -42,24 +52,34 @@ class Resolver:
 
 
 def test_response_cache_distinguishes_alternative_mode():
-    trips = {
-        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
-    }
+    trips = {"T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]}
     cache = RoutingCacheManager(CacheConfiguration())
-    planner = TransitPlanner(
-        FakeDatabase(stops("A", "D"), trips), cache_manager=cache
-    )
-    resolver = Resolver({("R", "D"): .9})
+    planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips), cache_manager=cache)
+    resolver = Resolver({("R", "D"): 0.9})
     common = dict(
-        algorithm="dijkstra", cache_mode="shared", include_diagnostics=True,
+        algorithm="dijkstra",
+        cache_mode="shared",
+        include_diagnostics=True,
     )
     planner.get_ranked_route_result(
-        "A", "D", MONDAY, at(7, 59), resolver,
-        route_number=1, include_alternatives=False, **common,
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        resolver,
+        route_number=1,
+        include_alternatives=False,
+        **common,
     )
     planner.get_ranked_route_result(
-        "A", "D", MONDAY, at(7, 59), resolver,
-        route_number=3, include_alternatives=True, **common,
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        resolver,
+        route_number=3,
+        include_alternatives=True,
+        **common,
     )
     assert cache.responses.statistics().entries == 2
 
@@ -72,10 +92,13 @@ def test_two_leg_reliability_is_multiplied():
     result = TransitPlanner(
         FakeDatabase(stops("A", "B", "C"), trips)
     ).plan_reliable_alternatives(
-        "A", "C", MONDAY, at(7, 55),
-        Resolver({("R1", "B"): .75, ("R2", "C"): .75}),
+        "A",
+        "C",
+        MONDAY,
+        at(7, 55),
+        Resolver({("R1", "B"): 0.75, ("R2", "C"): 0.75}),
     )
-    assert result.alternatives[0].route_reliability == pytest.approx(.5625)
+    assert result.alternatives[0].route_reliability == pytest.approx(0.5625)
 
 
 def test_three_probabilities_are_multiplied_not_averaged():
@@ -87,10 +110,13 @@ def test_three_probabilities_are_multiplied_not_averaged():
     result = TransitPlanner(
         FakeDatabase(stops("A", "B", "C", "D"), trips)
     ).plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59),
-        Resolver({("R1", "B"): .8, ("R2", "C"): .7, ("R3", "D"): .9}),
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("R1", "B"): 0.8, ("R2", "C"): 0.7, ("R3", "D"): 0.9}),
     )
-    assert result.alternatives[0].route_reliability == pytest.approx(.504)
+    assert result.alternatives[0].route_reliability == pytest.approx(0.504)
 
 
 def test_slower_reliable_path_survives_and_ranks_first():
@@ -101,11 +127,15 @@ def test_slower_reliable_path_survives_and_ranks_first():
     result = TransitPlanner(
         FakeDatabase(stops("A", "D"), trips)
     ).plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59),
-        Resolver({("RF", "D"): .2, ("RS", "D"): .95}),
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("RF", "D"): 0.2, ("RS", "D"): 0.95}),
     )
     assert [x.itinerary.legs[0].trip_id for x in result.alternatives] == [
-        "SLOW", "FAST"
+        "SLOW",
+        "FAST",
     ]
 
 
@@ -120,22 +150,21 @@ def test_dominated_label_is_removed_and_bounds_are_respected():
     result = TransitPlanner(
         FakeDatabase(stops("A", "D"), trips)
     ).plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59),
-        Resolver({("RB", "D"): .9, ("RD", "D"): .8, ("RL", "D"): 1}),
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("RB", "D"): 0.9, ("RD", "D"): 0.8, ("RL", "D"): 1}),
         search_horizon_minutes=60,
     )
     assert [x.itinerary.legs[0].trip_id for x in result.alternatives] == ["BEST"]
 
 
 def test_missing_profile_uses_conservative_fallback_and_is_marked():
-    trip = {
-        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
-    }
+    trip = {"T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]}
     result = TransitPlanner(
         FakeDatabase(stops("A", "D"), trip)
-    ).plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59), Resolver({})
-    )
+    ).plan_reliable_alternatives("A", "D", MONDAY, at(7, 59), Resolver({}))
     item = result.alternatives[0]
     assert item.insufficient_data
     assert item.route_reliability == pytest.approx(1e-9)
@@ -146,7 +175,7 @@ def test_profile_lookups_are_request_cached():
         "T1": [connection("T1", "weekday", "R", "A", "D", at(8), at(8, 10))],
         "T2": [connection("T2", "weekday", "R", "A", "D", at(8, 1), at(8, 10))],
     }
-    resolver = Resolver({("R", "D"): .9})
+    resolver = Resolver({("R", "D"): 0.9})
     TransitPlanner(FakeDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
         "A", "D", MONDAY, at(7, 59), resolver
     )
@@ -157,15 +186,20 @@ def test_get_ranked_routes_limits_without_extra_profile_lookups():
     trips = {
         f"T{number}": [
             connection(
-                f"T{number}", "weekday", f"R{number}", "A", "D",
-                at(8, number), at(8, 10 + number),
+                f"T{number}",
+                "weekday",
+                f"R{number}",
+                "A",
+                "D",
+                at(8, number),
+                at(8, 10 + number),
             )
         ]
         for number in range(4)
     }
-    resolver = Resolver({
-        (f"R{number}", "D"): .6 + number * .1 for number in range(4)
-    })
+    resolver = Resolver(
+        {(f"R{number}", "D"): 0.6 + number * 0.1 for number in range(4)}
+    )
     planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips))
     routes = planner.get_ranked_routes(
         "A", "D", MONDAY, at(7, 59), resolver, route_number=3
@@ -178,15 +212,18 @@ def test_returns_five_structurally_distinct_deterministic_alternatives():
     trips = {
         f"T{number}": [
             connection(
-                f"T{number}", "weekday", f"R{number}", "A", "D",
-                at(8, number), at(8, 10 + number),
+                f"T{number}",
+                "weekday",
+                f"R{number}",
+                "A",
+                "D",
+                at(8, number),
+                at(8, 10 + number),
             )
         ]
         for number in range(5)
     }
-    probabilities = {
-        (f"R{number}", "D"): 0.50 + number * 0.1 for number in range(5)
-    }
+    probabilities = {(f"R{number}", "D"): 0.50 + number * 0.1 for number in range(5)}
     planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips))
     first = planner.plan_reliable_alternatives(
         "A", "D", MONDAY, at(7, 59), Resolver(probabilities)
@@ -207,15 +244,16 @@ def test_search_timeout_is_enforced_during_profile_resolution():
             time.sleep(0.01)
             return super().resolve(*args)
 
-    trip = {
-        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
-    }
+    trip = {"T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]}
     planner = TransitPlanner(FakeDatabase(stops("A", "D"), trip))
     with pytest.raises(ReliableSearchTimeout, match="exceeded"):
         planner.plan_reliable_alternatives(
-            "A", "D", MONDAY, at(7, 59),
-            SlowResolver({("R", "D"): .9}),
-            timeout_seconds=.001,
+            "A",
+            "D",
+            MONDAY,
+            at(7, 59),
+            SlowResolver({("R", "D"): 0.9}),
+            timeout_seconds=0.001,
         )
 
 
@@ -226,12 +264,21 @@ def test_profiled_search_reports_consistent_diagnostics_without_changing_routes(
     }
     planner = TransitPlanner(FakeDatabase(stops("A", "D"), trips))
     plain = planner.plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("R", "D"): 0.9}),
         algorithm="baseline",
     )
     profiled = planner.plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-        include_diagnostics=True, algorithm="baseline",
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("R", "D"): 0.9}),
+        include_diagnostics=True,
+        algorithm="baseline",
     )
     assert [item.itinerary for item in plain.alternatives] == [
         item.itinerary for item in profiled.alternatives
@@ -258,13 +305,17 @@ def test_timeout_carries_partial_diagnostics():
             time.sleep(0.01)
             return super().resolve(*args)
 
-    trips = {
-        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
-    }
+    trips = {"T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]}
     with pytest.raises(ReliableSearchTimeout) as caught:
         TransitPlanner(FakeDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
-            "A", "D", MONDAY, at(7, 59), SlowResolver({("R", "D"): .9}),
-            timeout_seconds=.001, include_diagnostics=True, algorithm="baseline",
+            "A",
+            "D",
+            MONDAY,
+            at(7, 59),
+            SlowResolver({("R", "D"): 0.9}),
+            timeout_seconds=0.001,
+            include_diagnostics=True,
+            algorithm="baseline",
         )
     assert caught.value.diagnostics is not None
     assert caught.value.diagnostics.timings_ms.measured_search_ms >= 0
@@ -272,9 +323,7 @@ def test_timeout_carries_partial_diagnostics():
 
 
 def test_bulk_index_path_executes_no_hot_loop_repository_queries():
-    trips = {
-        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
-    }
+    trips = {"T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]}
 
     class BulkDatabase(FakeDatabase):
         def __init__(self):
@@ -291,7 +340,9 @@ def test_bulk_index_path_executes_no_hot_loop_repository_queries():
 
         def bulk_trip_connections(self, trip_ids, *, batch_size=2000):
             self.bulk_counts["trips"] += 1
-            return [item for trip_id in sorted(trip_ids) for item in self.trips[trip_id]]
+            return [
+                item for trip_id in sorted(trip_ids) for item in self.trips[trip_id]
+            ]
 
         def departures_from(self, *args, **kwargs):
             raise AssertionError("hot-loop departure query")
@@ -304,8 +355,13 @@ def test_bulk_index_path_executes_no_hot_loop_repository_queries():
 
     database = BulkDatabase()
     result = TransitPlanner(database).plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-        include_diagnostics=True, algorithm="baseline",
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("R", "D"): 0.9}),
+        include_diagnostics=True,
+        algorithm="baseline",
     )
     assert database.bulk_counts == {"departures": 1, "transfers": 1, "trips": 1}
     assert result.diagnostics.cache_statistics.unexpected_queries_during_search == 0
@@ -314,9 +370,7 @@ def test_bulk_index_path_executes_no_hot_loop_repository_queries():
 
 def test_nonboardable_departure_does_not_trigger_frontier_trip_loading():
     trips = {
-        "PAST": [
-            connection("PAST", "weekday", "R", "A", "D", at(7, 58), at(8, 8))
-        ]
+        "PAST": [connection("PAST", "weekday", "R", "A", "D", at(7, 58), at(8, 8))]
     }
 
     class BulkDatabase(FakeDatabase):
@@ -334,8 +388,13 @@ def test_nonboardable_departure_does_not_trigger_frontier_trip_loading():
 
     database = BulkDatabase(stops("A", "D"), trips)
     result = TransitPlanner(database).plan_reliable_alternatives(
-        "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-        include_diagnostics=True, algorithm="baseline",
+        "A",
+        "D",
+        MONDAY,
+        at(7, 59),
+        Resolver({("R", "D"): 0.9}),
+        include_diagnostics=True,
+        algorithm="baseline",
     )
     assert not result.alternatives
     assert database.trip_batches == 0
@@ -343,9 +402,7 @@ def test_nonboardable_departure_does_not_trigger_frontier_trip_loading():
 
 
 def test_timeout_diagnostics_include_completed_frontier_batch():
-    trips = {
-        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
-    }
+    trips = {"T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]}
 
     class SlowBulkDatabase(FakeDatabase):
         def bulk_departures_in_window(self, earliest, latest, service_ids=None):
@@ -359,9 +416,17 @@ def test_timeout_diagnostics_include_completed_frontier_batch():
             return []
 
     with pytest.raises(ReliableSearchTimeout) as caught:
-        TransitPlanner(SlowBulkDatabase(stops("A", "D"), trips)).plan_reliable_alternatives(
-            "A", "D", MONDAY, at(7, 59), Resolver({("R", "D"): .9}),
-            timeout_seconds=.001, include_diagnostics=True, algorithm="baseline",
+        TransitPlanner(
+            SlowBulkDatabase(stops("A", "D"), trips)
+        ).plan_reliable_alternatives(
+            "A",
+            "D",
+            MONDAY,
+            at(7, 59),
+            Resolver({("R", "D"): 0.9}),
+            timeout_seconds=0.001,
+            include_diagnostics=True,
+            algorithm="baseline",
         )
     diagnostics = caught.value.diagnostics
     assert diagnostics.counters.frontier_trip_batch_query_count == 1

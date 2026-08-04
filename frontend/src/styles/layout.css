@@ -1,0 +1,62 @@
+.engineDetails > summary {
+  padding: 18px 22px;
+  font-family: Manrope, sans-serif;
+}
+.engineGrid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: rgba(255, 255, 255, 0.12);
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+.engineGrid > div {
+  background: var(--navy);
+  padding: 22px;
+}
+.engineGrid span {
+  color: #5ad0c4;
+  font-family: Manrope, sans-serif;
+  font-size: 0.72rem;
+}
+.engineGrid strong {
+  display: block;
+  margin-top: 8px;
+}
+.engineGrid p {
+  color: #b4c6cf;
+  font-size: 0.76rem;
+  line-height: 1.6;
+  margin: 7px 0 0;
+}
+footer {
+  padding: 28px;
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  background: #e7edec;
+  border-top: 1px solid #d5dfdf;
+  color: #5b707b;
+  font-size: 0.76rem;
+}
+footer p {
+  margin: 0;
+}
+footer a {
+  color: var(--teal-dark);
+  font-weight: 700;
+}
+.spin {
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.engineDetails {
+  margin-top: 46px;
+  background: var(--navy);
+  border-color: var(--navy);
+  color: white;
+}

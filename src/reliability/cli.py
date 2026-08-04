@@ -18,8 +18,8 @@ from .client import RealtimeClient, RealtimeDownloadError
 from .collector import collect_snapshot
 from .config import ReliabilityConfig
 from .database import ReliabilityDatabase
-from .profiles import ProfileResolver
 from .policy import DEFAULT_MINIMUM_SAMPLES
+from .profiles import ProfileResolver
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,18 +31,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES
     )
     aggregate.add_argument(
-        "--full-rebuild", action="store_true",
+        "--full-rebuild",
+        action="store_true",
         help="recreate all derived samples and profiles from append-only raw data",
     )
     report = subparsers.add_parser("report", help="show a reliability profile")
     report.add_argument("--route-id", required=True)
     report.add_argument("--direction-id", type=int, choices=(0, 1))
-    report.add_argument("--time-window", required=True, choices=(
-        "overnight", "morning_peak", "midday", "afternoon_peak", "evening",
-    ))
     report.add_argument(
-        "--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES
+        "--time-window",
+        required=True,
+        choices=(
+            "overnight",
+            "morning_peak",
+            "midday",
+            "afternoon_peak",
+            "evening",
+        ),
     )
+    report.add_argument("--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES)
     return parser
 
 
@@ -63,16 +70,21 @@ def main() -> int:
             print(f"Updates without usable delay: {summary.unusable_delay}")
         elif args.command == "aggregate":
             summary = rebuild_profiles(
-                database, args.minimum_samples,
+                database,
+                args.minimum_samples,
                 full_rebuild=args.full_rebuild,
-                early_threshold=int(os.getenv(
-                    "RELIABILITY_EARLY_SECONDS",
-                    str(EARLY_THRESHOLD_SECONDS),
-                )),
-                late_threshold=int(os.getenv(
-                    "RELIABILITY_LATE_SECONDS",
-                    str(LATE_THRESHOLD_SECONDS),
-                )),
+                early_threshold=int(
+                    os.getenv(
+                        "RELIABILITY_EARLY_SECONDS",
+                        str(EARLY_THRESHOLD_SECONDS),
+                    )
+                ),
+                late_threshold=int(
+                    os.getenv(
+                        "RELIABILITY_LATE_SECONDS",
+                        str(LATE_THRESHOLD_SECONDS),
+                    )
+                ),
                 shrinkage_strength=float(
                     os.getenv(
                         "RELIABILITY_SHRINKAGE_STRENGTH",
@@ -86,9 +98,9 @@ def main() -> int:
             print(f"Profiles below minimum: {summary.profiles_below_minimum}")
             print(f"Total execution time: {summary.elapsed_seconds:.3f}s")
         else:
-            selection = ProfileResolver(
-                database, args.minimum_samples
-            ).resolve(args.route_id, args.direction_id, args.time_window)
+            selection = ProfileResolver(database, args.minimum_samples).resolve(
+                args.route_id, args.direction_id, args.time_window
+            )
             print(f"Fallback level: {selection.fallback_level}")
             if selection.profile is None:
                 print("Insufficient reliability data.")
@@ -96,15 +108,9 @@ def main() -> int:
             profile = selection.profile
             print(f"Samples: {profile.sample_count}")
             print(f"Signed average delay: {profile.mean_delay_seconds:.1f}s")
-            print(
-                "Mean absolute delay: "
-                f"{profile.mean_absolute_delay_seconds:.1f}s"
-            )
+            print(f"Mean absolute delay: {profile.mean_absolute_delay_seconds:.1f}s")
             print(f"P50 delay: {profile.p50_delay_seconds:.1f}s")
-            print(
-                "P90 absolute delay: "
-                f"{profile.p90_absolute_delay_seconds:.1f}s"
-            )
+            print(f"P90 absolute delay: {profile.p90_absolute_delay_seconds:.1f}s")
             print(f"Early probability (< -120s): {profile.early_probability:.1%}")
             print(
                 "On-time probability (-120s to 300s): "

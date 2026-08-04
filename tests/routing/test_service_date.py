@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -8,7 +8,7 @@ from src.routing.service_date import current_service_date
 
 def test_service_date_uses_vancouver_calendar_day():
     # This UTC instant is still the previous calendar day in Vancouver.
-    instant = datetime(2026, 8, 3, 6, 30, tzinfo=timezone.utc)
+    instant = datetime(2026, 8, 3, 6, 30, tzinfo=UTC)
     assert current_service_date(instant).isoformat() == "2026-08-02"
 
 

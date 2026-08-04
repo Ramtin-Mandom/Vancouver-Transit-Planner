@@ -117,7 +117,9 @@ def active_columns(
             raw_header = next(reader)
         except StopIteration as exc:
             raise DataValidationError(f"{path.name}: file is empty") from exc
-    header = validate_header(path.name, raw_header, columns, implicit_headers=implicit_headers)
+    header = validate_header(
+        path.name, raw_header, columns, implicit_headers=implicit_headers
+    )
     return tuple(column for column in columns if column.source in header)
 
 
@@ -134,8 +136,12 @@ def iter_converted_rows(
             raw_header = next(reader)
         except StopIteration as exc:
             raise DataValidationError(f"{path.name}: file is empty") from exc
-        header = validate_header(path.name, raw_header, columns, implicit_headers=implicit_headers)
-        selected_columns = tuple(column for column in columns if column.source in header)
+        header = validate_header(
+            path.name, raw_header, columns, implicit_headers=implicit_headers
+        )
+        selected_columns = tuple(
+            column for column in columns if column.source in header
+        )
         indexes: Mapping[str, int] = {name: index for index, name in enumerate(header)}
         for row_number, row in enumerate(reader, start=2):
             if len(row) != len(header):

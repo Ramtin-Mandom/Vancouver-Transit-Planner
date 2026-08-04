@@ -166,11 +166,11 @@ def clean_file(
     return CleaningResult(kept, removed, reasons), retained
 
 
-def clean_extracted_data(data_dir: Path, *, dry_run: bool = False) -> dict[str, CleaningResult]:
+def clean_extracted_data(
+    data_dir: Path, *, dry_run: bool = False
+) -> dict[str, CleaningResult]:
     """Clean all schema-backed files in dependency order."""
-    retained_ids: dict[str, set[str]] = {
-        table: set() for table in PRIMARY_KEY_SOURCE
-    }
+    retained_ids: dict[str, set[str]] = {table: set() for table in PRIMARY_KEY_SOURCE}
     results: dict[str, CleaningResult] = {}
     for spec in TABLES:
         path = data_dir / spec.filename
@@ -203,7 +203,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Remove incomplete/orphaned rows from extracted transit files."
     )
-    parser.add_argument("--dry-run", action="store_true", help="report without changing files")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="report without changing files"
+    )
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")

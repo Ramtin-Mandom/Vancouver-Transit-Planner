@@ -12,7 +12,9 @@ export function Header({ status }: { status: ApiStatus }) {
     <header className="siteHeader">
       <div className="headerInner">
         <a className="brand" href="#planner" aria-label="Vancouver Transit Planner home">
-          <span className="brandMark" aria-hidden="true">V</span>
+          <span className="brandMark" aria-hidden="true">
+            V
+          </span>
           <span>
             <strong>Vancouver Transit Planner</strong>
             <small>Reliability-aware routing</small>

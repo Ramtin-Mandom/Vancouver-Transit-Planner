@@ -1,18 +1,13 @@
 import { useState } from "react";
-import {
-  AlertTriangle,
-  Award,
-  ChevronDown,
-  Clock3,
-  Gauge,
-  ShieldCheck
-} from "lucide-react";
+import { AlertTriangle, Award, ChevronDown, Clock3, Gauge, ShieldCheck } from "lucide-react";
 import type { RouteAlternative } from "../api/types";
 import { ItineraryTimeline } from "./ItineraryTimeline";
 
 interface Props {
   alternative: RouteAlternative;
   labels: string[];
+  selected?: boolean;
+  onSelect?: () => void;
 }
 
 const fallbackLabels: Record<string, string> = {
@@ -20,14 +15,17 @@ const fallbackLabels: Record<string, string> = {
   route_direction: "Route and direction profile",
   route: "Route-wide profile",
   network: "Network-wide profile",
+  default: "Conservative default (no sampled profile)",
   "insufficient-data": "Insufficient historical data"
 };
 
-export function RouteCard({ alternative, labels }: Props) {
+export function RouteCard({ alternative, labels, selected = false, onSelect }: Props) {
   const [expanded, setExpanded] = useState(alternative.rank === 1);
   const routeNames = [...new Set(alternative.legs.map((leg) => leg.route_name))];
   return (
-    <article className={`routeCard ${alternative.rank === 1 ? "routeCard--best" : ""}`}>
+    <article
+      className={`routeCard ${alternative.rank === 1 ? "routeCard--best" : ""} ${selected ? "routeCard--selected" : ""}`}
+    >
       <div className="routeCardTop">
         <div className="rankBlock">
           <span>Rank</span>
@@ -36,7 +34,9 @@ export function RouteCard({ alternative, labels }: Props) {
         <div className="routeIdentity">
           <div className="resultLabels">
             {labels.map((label) => (
-              <span key={label}><Award size={13} /> {label}</span>
+              <span key={label}>
+                <Award size={13} /> {label}
+              </span>
             ))}
           </div>
           <h3>{routeNames.length > 0 ? routeNames.join(" → ") : "Transit route"}</h3>
@@ -57,23 +57,48 @@ export function RouteCard({ alternative, labels }: Props) {
       </div>
 
       <div className="routeMetrics">
-        <div><Clock3 size={18} /><span><small>Duration</small><strong>{alternative.duration_display}</strong></span></div>
-        <div><Gauge size={18} /><span><small>Transfers</small><strong>{alternative.transfer_count}</strong></span></div>
+        <div>
+          <Clock3 size={18} />
+          <span>
+            <small>Duration</small>
+            <strong>{alternative.duration_display}</strong>
+          </span>
+        </div>
+        <div>
+          <Gauge size={18} />
+          <span>
+            <small>Transfers</small>
+            <strong>{alternative.transfer_count}</strong>
+          </span>
+        </div>
         <div className="reliabilityMetric">
           <ShieldCheck size={18} />
-          <span><small>Journey reliability</small><strong>{Math.round(alternative.route_reliability * 100)}%</strong></span>
+          <span>
+            <small>Journey reliability</small>
+            <strong>{Math.round(alternative.route_reliability * 100)}%</strong>
+          </span>
         </div>
       </div>
 
       <p className="reliabilityNote">
-        Reliability combines historical estimates across the complete journey;
-        it is not a guarantee.
+        Reliability combines historical estimates across the complete journey; it is not a
+        guarantee.
       </p>
+      {onSelect && (
+        <button
+          className="mapSelectButton"
+          type="button"
+          aria-pressed={selected}
+          onClick={onSelect}
+        >
+          {selected ? "Shown on map" : "Show on map"}
+        </button>
+      )}
 
       {alternative.insufficient_data && (
         <div className="dataWarning" role="status">
           <AlertTriangle size={17} />
-          Limited historical data—one or more broader fallback profiles were used.
+          Limited historical data—one or more profiles are under-sampled or unavailable.
         </div>
       )}
 

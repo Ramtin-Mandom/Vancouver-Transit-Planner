@@ -8,7 +8,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "extracted"
 
@@ -28,7 +27,7 @@ class DatabaseConfig:
     password: str
 
     @classmethod
-    def from_environment(cls) -> "DatabaseConfig":
+    def from_environment(cls) -> DatabaseConfig:
         """Load a validated configuration without exposing secret values."""
         load_dotenv(PROJECT_ROOT / ".env")
         names = ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USER", "DB_PASSWORD")
@@ -59,4 +58,3 @@ class DatabaseConfig:
             "user": self.user,
             "password": self.password,
         }
-

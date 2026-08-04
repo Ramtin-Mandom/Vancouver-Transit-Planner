@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -31,9 +31,7 @@ def _event_delay(event, scheduled_time, service_date) -> int | None:
     if _has(event, "delay"):
         return int(event.delay)
     if _has(event, "time"):
-        service_midnight = datetime.combine(
-            service_date, time.min, tzinfo=VANCOUVER
-        )
+        service_midnight = datetime.combine(service_date, time.min, tzinfo=VANCOUVER)
         scheduled_timestamp = (service_midnight + scheduled_time).timestamp()
         return round(int(event.time) - scheduled_timestamp)
     return None
@@ -41,7 +39,7 @@ def _event_delay(event, scheduled_time, service_date) -> int | None:
 
 def parse_feed(feed, lookup: ScheduleLookup) -> ParseSummary:
     timestamp = int(getattr(feed.header, "timestamp", 0))
-    observed_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    observed_at = datetime.fromtimestamp(timestamp, tz=UTC)
     observations: list[DelayObservation] = []
     trip_count = stop_count = malformed = unknown = unusable = 0
 
@@ -79,14 +77,11 @@ def parse_feed(feed, lookup: ScheduleLookup) -> ParseSummary:
                 continue
             arrival = getattr(stop_update, "arrival", None)
             departure = getattr(stop_update, "departure", None)
-            delay = _event_delay(
-                arrival, scheduled.scheduled_arrival, service_date
-            )
+            delay = _event_delay(arrival, scheduled.scheduled_arrival, service_date)
             if delay is None:
                 delay = _event_delay(
                     departure,
-                    scheduled.scheduled_departure
-                    or scheduled.scheduled_arrival,
+                    scheduled.scheduled_departure or scheduled.scheduled_arrival,
                     service_date,
                 )
             if delay is None:
@@ -115,8 +110,8 @@ def parse_feed(feed, lookup: ScheduleLookup) -> ParseSummary:
 
 
 def decode_feed(payload: bytes):
-    from google.transit import gtfs_realtime_pb2
     from google.protobuf.message import DecodeError
+    from google.transit import gtfs_realtime_pb2
 
     feed = gtfs_realtime_pb2.FeedMessage()
     try:

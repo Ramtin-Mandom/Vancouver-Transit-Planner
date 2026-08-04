@@ -7,9 +7,9 @@ import os
 from datetime import timedelta
 from typing import Any
 
+from .cache import RoutingCacheManager
 from .models import Stop
 from .reliable import ParetoTransitSearch, _Label
-from .cache import RoutingCacheManager
 
 EARTH_RADIUS_KM = 6371.0088
 DEFAULT_MAX_POSSIBLE_TRANSIT_SPEED_KMH = 120.0
@@ -25,7 +25,11 @@ def configured_max_transit_speed_kmh() -> float:
         speed = float(raw)
     except (TypeError, ValueError):
         return DEFAULT_MAX_POSSIBLE_TRANSIT_SPEED_KMH
-    return speed if math.isfinite(speed) and speed > 0 else DEFAULT_MAX_POSSIBLE_TRANSIT_SPEED_KMH
+    return (
+        speed
+        if math.isfinite(speed) and speed > 0
+        else DEFAULT_MAX_POSSIBLE_TRANSIT_SPEED_KMH
+    )
 
 
 def haversine_distance_km(
@@ -91,8 +95,13 @@ class AStarParetoTransitSearch(ParetoTransitSearch):
         cache_manager: RoutingCacheManager | None = None,
         gtfs_version: str = "unknown",
     ) -> None:
-        super().__init__(database, calendar, resolver, cache_manager=cache_manager,
-                         gtfs_version=gtfs_version)
+        super().__init__(
+            database,
+            calendar,
+            resolver,
+            cache_manager=cache_manager,
+            gtfs_version=gtfs_version,
+        )
         self.cache_manager = cache_manager
         self.gtfs_version = gtfs_version
         self.max_speed_kmh = (
@@ -129,7 +138,8 @@ class AStarParetoTransitSearch(ParetoTransitSearch):
                 shared_stops = snapshot[0]
         bulk_lookup = getattr(self.database, "find_stops", None)
         self._stops = (
-            dict(shared_stops) if shared_stops is not None
+            dict(shared_stops)
+            if shared_stops is not None
             else (bulk_lookup(stop_ids) if callable(bulk_lookup) else {})
         )
         # Legacy repositories cannot expose the departure-window index.  They

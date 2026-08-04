@@ -9,10 +9,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.reliability.policy import DEFAULT_MINIMUM_SAMPLES
-
+from src.routing.cache import DEFAULT_ROUTING_CACHE_MODE
 from src.routing.cli import parse_gtfs_time
 from src.routing.route_results import RoutingPreferences
-from src.routing.cache import DEFAULT_ROUTING_CACHE_MODE
 
 
 class ApiModel(BaseModel):
@@ -176,6 +175,10 @@ class SearchDiagnosticCountersResponse(ApiModel):
     marked_stops_per_round: tuple[int, ...] = ()
     transfer_edges_relaxed: int = 0
     candidate_itineraries: int = 0
+    candidate_truncated: bool = False
+    candidate_collection_complete: bool = False
+    resource_limit_reached: bool = False
+    termination_reason: str | None = None
 
 
 class SearchCacheStatisticsResponse(ApiModel):
@@ -243,7 +246,7 @@ class RoutePlanRequest(ApiModel):
     origin_stop_id: str
     destination_stop_id: str
     departure_time: str
-    algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
+    algorithm: Literal["dijkstra", "astar"] = "astar"
     cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE
     include_alternatives: bool = False
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
@@ -255,7 +258,7 @@ class RoutePlanRequest(ApiModel):
     include_diagnostics: bool = False
 
     @model_validator(mode="after")
-    def validate_route_request(self) -> "RoutePlanRequest":
+    def validate_route_request(self) -> RoutePlanRequest:
         self.origin_stop_id = self.origin_stop_id.strip()
         self.destination_stop_id = self.destination_stop_id.strip()
         if not self.origin_stop_id or not self.destination_stop_id:

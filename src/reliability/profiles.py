@@ -4,12 +4,58 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from src.routing.cache import RoutingCacheManager
+
 from .classification import time_window
 from .models import ProfileSelection, ReliabilityProfile
 from .policy import DEFAULT_MINIMUM_SAMPLES
-from src.routing.cache import RoutingCacheManager
 
 FALLBACKS = ("route_direction_window", "route_direction", "route", "network")
+
+
+def select_profile(
+    route_id: str,
+    direction_id: int | None,
+    exact: ReliabilityProfile | None,
+    fallback_lookup,
+    minimum_samples: int,
+) -> ProfileSelection:
+    """Apply the shared database/snapshot reliability fallback policy."""
+    if exact is not None:
+        return ProfileSelection(
+            exact, "route_direction_window", exact.sample_count < minimum_samples
+        )
+    level = "route_direction"
+    parent = fallback_lookup(level, route_id, direction_id)
+    if parent is None:
+        level = "route"
+        parent = fallback_lookup(level, route_id, None)
+    if parent is None:
+        level = "network"
+        parent = fallback_lookup(level, None, None)
+    if parent is None:
+        return ProfileSelection(None, "default", True)
+    probability = float(parent["reliability_probability"])
+    profile = ReliabilityProfile(
+        route_id=route_id if level != "network" else None,
+        stop_id=None,
+        weekday=None,
+        hour_of_day=None,
+        sample_count=int(parent["sample_count"]),
+        mean_delay_seconds=0.0,
+        mean_absolute_delay_seconds=0.0,
+        delay_stddev_seconds=None,
+        p50_delay_seconds=0.0,
+        p90_delay_seconds=0.0,
+        early_probability=0.0,
+        on_time_probability=float(parent["on_time_probability"]),
+        late_probability=1.0 - float(parent["on_time_probability"]),
+        direction_id=direction_id if level == "route_direction" else None,
+        time_window=None,
+        reliability_probability=probability,
+        distinct_service_dates=int(parent.get("distinct_service_dates", 0)),
+    )
+    return ProfileSelection(profile, level, profile.sample_count < minimum_samples)
 
 
 class ProfileResolver:
@@ -17,7 +63,8 @@ class ProfileResolver:
         self,
         database,
         minimum_samples: int = DEFAULT_MINIMUM_SAMPLES,
-        *, shared_cache: RoutingCacheManager | None = None,
+        *,
+        shared_cache: RoutingCacheManager | None = None,
         profile_version: str = "unknown",
     ) -> None:
         self.database = database
@@ -39,7 +86,8 @@ class ProfileResolver:
             cache_key = (self.profile_version, *key)
             found, raw = (
                 self.shared_cache.profiles.get(cache_key)
-                if self.shared_cache is not None else (False, None)
+                if self.shared_cache is not None
+                else (False, None)
             )
             if found:
                 self.shared_cache_hits += 1
@@ -50,6 +98,7 @@ class ProfileResolver:
                 missing.add(key)
         query_count = 0
         if missing:
+
             def load_missing():
                 loaded = {}
                 remaining = set(missing)
@@ -66,7 +115,13 @@ class ProfileResolver:
                     route_id, direction_id, window = missing_key
                     raw = (
                         exact.get(missing_key),
-                        parents.get(("route_direction", route_id, -1 if direction_id is None else direction_id)),
+                        parents.get(
+                            (
+                                "route_direction",
+                                route_id,
+                                -1 if direction_id is None else direction_id,
+                            )
+                        ),
                         parents.get(("route", route_id, -1)),
                         parents.get(("network", "*", -1)),
                     )
@@ -91,7 +146,11 @@ class ProfileResolver:
             route_id, direction_id, window = key
             profile, direction_parent, route_parent, network_parent = raw_by_key[key]
             parent_values = {
-                ("route_direction", route_id, -1 if direction_id is None else direction_id): direction_parent,
+                (
+                    "route_direction",
+                    route_id,
+                    -1 if direction_id is None else direction_id,
+                ): direction_parent,
                 ("route", route_id, -1): route_parent,
                 ("network", "*", -1): network_parent,
             }
@@ -99,9 +158,9 @@ class ProfileResolver:
                 route_id,
                 direction_id,
                 profile,
-                lambda level, route, direction: parent_values.get((
-                    level, route or "*", -1 if direction is None else direction
-                )),
+                lambda level, route, direction, parents=parent_values: parents.get(
+                    (level, route or "*", -1 if direction is None else direction)
+                ),
             )
         return query_count
 
@@ -129,15 +188,21 @@ class ProfileResolver:
                 self.shared_cache_hits += 1
                 profile, direction_parent, route_parent, network_parent = raw
                 parent_values = {
-                    ("route_direction", route_id, -1 if direction_id is None else direction_id): direction_parent,
+                    (
+                        "route_direction",
+                        route_id,
+                        -1 if direction_id is None else direction_id,
+                    ): direction_parent,
                     ("route", route_id, -1): route_parent,
                     ("network", "*", -1): network_parent,
                 }
                 selection = self._select(
-                    route_id, direction_id, profile,
-                    lambda level, route, direction: parent_values.get((
-                        level, route or "*", -1 if direction is None else direction
-                    )),
+                    route_id,
+                    direction_id,
+                    profile,
+                    lambda level, route, direction: parent_values.get(
+                        (level, route or "*", -1 if direction is None else direction)
+                    ),
                 )
                 self._cache[key] = selection
                 return selection
@@ -153,7 +218,11 @@ class ProfileResolver:
                 cache_key, (profile, direction_parent, route_parent, network_parent)
             )
         parent_values = {
-            ("route_direction", route_id, -1 if direction_id is None else direction_id): direction_parent,
+            (
+                "route_direction",
+                route_id,
+                -1 if direction_id is None else direction_id,
+            ): direction_parent,
             ("route", route_id, -1): route_parent,
             ("network", "*", -1): network_parent,
         }
@@ -161,55 +230,14 @@ class ProfileResolver:
             route_id,
             direction_id,
             profile,
-            lambda level, route, direction: parent_values.get((
-                level, route or "*", -1 if direction is None else direction
-            )),
+            lambda level, route, direction: parent_values.get(
+                (level, route or "*", -1 if direction is None else direction)
+            ),
         )
         self._cache[key] = selection
         return selection
 
     def _select(self, route_id, direction_id, profile, fallback_lookup):
-        if profile is not None:
-            selection = ProfileSelection(
-                profile, "route_direction_window",
-                profile.sample_count < self.minimum_samples,
-            )
-        else:
-            # Exact cells can be absent. Materialize a lightweight profile from
-            # the first precomputed parent so routing still uses the hierarchy.
-            level = "route_direction"
-            parent = fallback_lookup(level, route_id, direction_id)
-            if parent is None:
-                level = "route"
-                parent = fallback_lookup(level, route_id, None)
-            if parent is None:
-                level = "network"
-                parent = fallback_lookup(level, None, None)
-            fallback = None
-            if parent:
-                probability = float(parent["reliability_probability"])
-                fallback = ReliabilityProfile(
-                    route_id=route_id if level != "network" else None,
-                    stop_id=None,
-                    weekday=None,
-                    hour_of_day=None,
-                    sample_count=int(parent["sample_count"]),
-                    mean_delay_seconds=0.0,
-                    mean_absolute_delay_seconds=0.0,
-                    delay_stddev_seconds=None,
-                    p50_delay_seconds=0.0,
-                    p90_delay_seconds=0.0,
-                    early_probability=0.0,
-                    on_time_probability=float(parent["on_time_probability"]),
-                    late_probability=(
-                        1.0 - float(parent["on_time_probability"])
-                    ),
-                    direction_id=direction_id if level == "route_direction" else None,
-                    time_window=None,
-                    reliability_probability=probability,
-                    distinct_service_dates=int(parent["distinct_service_dates"]),
-                )
-            selection = ProfileSelection(
-                fallback, level if parent else "insufficient-data", True
-            )
-        return selection
+        return select_profile(
+            route_id, direction_id, profile, fallback_lookup, self.minimum_samples
+        )

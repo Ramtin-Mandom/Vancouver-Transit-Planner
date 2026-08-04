@@ -5,11 +5,11 @@ from __future__ import annotations
 import random
 from statistics import mean
 
-from .models import SimulationResult
 from .classification import (
     EARLY_THRESHOLD_SECONDS,
     FINAL_ARRIVAL_LATE_THRESHOLD_SECONDS,
 )
+from .models import SimulationResult
 
 MIN_DELAY_SECONDS = -900
 MAX_DELAY_SECONDS = 7200
@@ -37,9 +37,7 @@ def simulate_itinerary(
     rng = random.Random(seed)
     selections = []
     for leg in itinerary.legs:
-        selection = resolver.resolve(
-            leg.route_id, leg.direction_id, leg.arrival_time
-        )
+        selection = resolver.resolve(leg.route_id, leg.direction_id, leg.arrival_time)
         selections.append(selection)
     schedule_adherence = (
         mean(
@@ -79,9 +77,7 @@ def simulate_itinerary(
     completion = completions / simulations
     on_time = (
         sum(
-            EARLY_THRESHOLD_SECONDS
-            <= delay
-            <= FINAL_ARRIVAL_LATE_THRESHOLD_SECONDS
+            EARLY_THRESHOLD_SECONDS <= delay <= FINAL_ARRIVAL_LATE_THRESHOLD_SECONDS
             for delay in final_delays
         )
         / simulations

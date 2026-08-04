@@ -33,12 +33,18 @@ def test_trip_cache_reuses_rows_and_versions_make_old_entries_unreachable():
 
     repository = Repository()
     shared = manager()
-    RequestTripConnectionLoader(repository, shared_cache=shared, gtfs_version="v1").ensure_loaded({"T"})
-    warm = RequestTripConnectionLoader(repository, shared_cache=shared, gtfs_version="v1")
+    RequestTripConnectionLoader(
+        repository, shared_cache=shared, gtfs_version="v1"
+    ).ensure_loaded({"T"})
+    warm = RequestTripConnectionLoader(
+        repository, shared_cache=shared, gtfs_version="v1"
+    )
     warm.ensure_loaded({"T"})
     assert repository.calls == 1
     assert warm.shared_cache_hits == 1
-    RequestTripConnectionLoader(repository, shared_cache=shared, gtfs_version="v2").ensure_loaded({"T"})
+    RequestTripConnectionLoader(
+        repository, shared_cache=shared, gtfs_version="v2"
+    ).ensure_loaded({"T"})
     assert repository.calls == 2
 
 
@@ -52,8 +58,12 @@ def test_missing_trip_uses_short_lived_negative_cache():
 
     repository = Repository()
     shared = manager()
-    RequestTripConnectionLoader(repository, shared_cache=shared, gtfs_version="v1").ensure_loaded({"missing"})
-    warm = RequestTripConnectionLoader(repository, shared_cache=shared, gtfs_version="v1")
+    RequestTripConnectionLoader(
+        repository, shared_cache=shared, gtfs_version="v1"
+    ).ensure_loaded({"missing"})
+    warm = RequestTripConnectionLoader(
+        repository, shared_cache=shared, gtfs_version="v1"
+    )
     warm.ensure_loaded({"missing"})
     assert repository.calls == 1
     assert warm.negative_cache_hits == 1
