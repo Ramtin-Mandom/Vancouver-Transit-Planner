@@ -14,7 +14,7 @@ Correctness order:
 
 1. Validate source rows against snapshot v2.
 2. Compare array Dijkstra with the legacy engine at `24abaa8`.
-3. Compare zero-heuristic array A* with array Dijkstra.
+3. Compare validated-geographic array A* with array Dijkstra.
 4. Run randomized differential tests and the independent path validator.
 5. Only after all of the above pass, benchmark a proven admissible non-zero
    heuristic and memory use.
@@ -37,9 +37,17 @@ members of the same parent station, with a documented default of 120 seconds.
 Render must rebuild the routing snapshot before starting the v2 application;
 the loader and `/ready` reject the v1 artifact rather than silently loading it.
 
-The current A* uses `h = 0`. This is an admissible and consistent A* mode and is
-kept deliberately until a useful non-zero lower bound is proved against every
-edge class. It provides correctness equivalence, not a performance claim.
+Snapshot A* uses a request-cached Haversine travel-time lower bound for
+single-best-route searches. Snapshot construction measures the implied speed
+of every positive-displacement transit connection and every usable transfer,
+including GTFS times beyond 24:00, then stores the greatest speed with a 0.1%
+numerical safety margin. The loader revalidates that bound against the arrays.
+The triangle inequality and edge-speed invariant make the heuristic consistent.
+
+If coordinates or metadata are missing/invalid, or a displaced edge has
+non-positive duration, loading continues and A* automatically uses `h = 0`
+with a diagnostic reason. Alternatives retain Dijkstra ordering because their
+candidate count and extra-arrival-window cutoff depend on arrival ordering.
 
 Full-data differential measurements, the named Coquitlam Central bay IDs, and
 production RSS/latency numbers require database/snapshot access. They must not

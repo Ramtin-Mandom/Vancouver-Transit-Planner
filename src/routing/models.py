@@ -145,6 +145,10 @@ class SearchDiagnosticCounters:
     transfer_edges_examined: int = 0
     heuristic_evaluations: int = 0
     zero_heuristic_fallbacks: int = 0
+    geographic_heuristic_enabled: bool = False
+    validated_maximum_speed_mps: float | None = None
+    heuristic_fallback_reason: str | None = None
+    heuristic_cache_hits: int = 0
     final_arrival_cost: int = 0
     candidate_trip_ids_from_frontier: int = 0
     unique_frontier_trips_requested: int = 0
