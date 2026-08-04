@@ -19,8 +19,12 @@ export function PriorityControls({ reliability, onChange }: Props) {
         </button>
       </div>
       <div className="priorityValues" aria-live="polite">
-        <span><ShieldCheck size={17} /> Reliability <strong>{reliability}%</strong></span>
-        <span><Timer size={17} /> Travel time <strong>{travelTime}%</strong></span>
+        <span>
+          <ShieldCheck size={17} /> Reliability <strong>{reliability}%</strong>
+        </span>
+        <span>
+          <Timer size={17} /> Travel time <strong>{travelTime}%</strong>
+        </span>
       </div>
       <input
         className="balanceSlider"
@@ -33,10 +37,13 @@ export function PriorityControls({ reliability, onChange }: Props) {
         onChange={(event) => onChange(Number(event.target.value))}
         style={{ "--balance": `${reliability}%` } as React.CSSProperties}
       />
-      <div className="sliderLabels"><span>Faster</span><span>More dependable</span></div>
+      <div className="sliderLabels">
+        <span>Faster</span>
+        <span>More dependable</span>
+      </div>
       <p className="helperText">
-        Increasing reliability may favor a slower route with stronger historical
-        performance. Reliability is an estimate, not a guarantee.
+        Increasing reliability may favor a slower route with stronger historical performance.
+        Reliability is an estimate, not a guarantee.
       </p>
     </section>
   );

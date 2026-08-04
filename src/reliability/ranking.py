@@ -48,9 +48,7 @@ def rank_itineraries(itineraries, simulations) -> list[RankedItinerary]:
             itinerary=item,
             simulation=simulation,
             reliability_score=reliability_score(item, simulation, fastest),
-            schedule_adherence=_clamp_probability(
-                simulation.schedule_adherence
-            ),
+            schedule_adherence=_clamp_probability(simulation.schedule_adherence),
             speed_ratio=(
                 1.0
                 if item.total_scheduled_travel_time.total_seconds() <= 0
@@ -61,7 +59,7 @@ def rank_itineraries(itineraries, simulations) -> list[RankedItinerary]:
             ),
             itinerary_id=itinerary_identifier(item),
         )
-        for item, simulation in zip(itineraries, simulations)
+        for item, simulation in zip(itineraries, simulations, strict=False)
     ]
     return sorted(
         ranked,

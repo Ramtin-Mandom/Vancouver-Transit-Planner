@@ -6,19 +6,19 @@ import argparse
 import json
 from datetime import date
 from statistics import median
+from time import perf_counter
 
 from src.reliability.database import ReliabilityDatabase
 from src.reliability.profiles import ProfileResolver
-from src.routing.cli import parse_gtfs_time
-from src.routing.database import TransitDatabase
-from src.routing.planner import TransitPlanner
-from src.routing.warmup import RoutingWarmupCoordinator, WarmupConfiguration
-from time import perf_counter
 from src.routing.cache import (
     DEFAULT_ROUTING_CACHE_MODE,
     CacheConfiguration,
     RoutingCacheManager,
 )
+from src.routing.cli import parse_gtfs_time
+from src.routing.database import TransitDatabase
+from src.routing.planner import TransitPlanner
+from src.routing.warmup import RoutingWarmupCoordinator, WarmupConfiguration
 
 
 def route_signatures(result):
@@ -39,7 +39,11 @@ def route_signatures(result):
 
 
 def measurement(
-    result, samples, cold, startup_to_ready_ms=0.0, warmup_state=None,
+    result,
+    samples,
+    cold,
+    startup_to_ready_ms=0.0,
+    warmup_state=None,
     startup_initialization_ms=0.0,
 ):
     diagnostics = result.diagnostics
@@ -57,15 +61,17 @@ def measurement(
             cache.transfer_query_count,
         )
     )
-    cold_query_count = sum((
-        cold_cache.bulk_departure_query_count,
-        cold_cache.bulk_transfer_query_count,
-        cold_cache.bulk_trip_query_count,
-        cold_cache.bulk_profile_query_count,
-        cold_cache.departure_query_count,
-        cold_cache.trip_query_count,
-        cold_cache.transfer_query_count,
-    ))
+    cold_query_count = sum(
+        (
+            cold_cache.bulk_departure_query_count,
+            cold_cache.bulk_transfer_query_count,
+            cold_cache.bulk_trip_query_count,
+            cold_cache.bulk_profile_query_count,
+            cold_cache.departure_query_count,
+            cold_cache.trip_query_count,
+            cold_cache.transfer_query_count,
+        )
+    )
     return {
         "route_signatures": route_signatures(result),
         "candidate_count": len(result.alternatives),
@@ -130,21 +136,29 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--origin", default="3334")
     parser.add_argument("--destination", default="1875")
-    parser.add_argument("--date", type=date.fromisoformat, default=date(2026, 7, 31))
-    parser.add_argument("--departure", type=parse_gtfs_time, default=parse_gtfs_time("08:00:00"))
+    parser.add_argument("--date", type=date.fromisoformat, default=date.today())
+    parser.add_argument(
+        "--departure", type=parse_gtfs_time, default=parse_gtfs_time("08:00:00")
+    )
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--max-extra-minutes", type=int, default=10)
     parser.add_argument(
-        "--algorithms", nargs="+", choices=("baseline", "astar", "mc_raptor"),
+        "--algorithms",
+        nargs="+",
+        choices=("baseline", "astar", "mc_raptor"),
         default=("baseline", "astar", "mc_raptor"),
     )
     parser.add_argument(
-        "--warmup", choices=("disabled", "essential", "skytrain"),
+        "--warmup",
+        choices=("disabled", "essential", "skytrain"),
         default="disabled",
     )
-    parser.add_argument("--trip-loading-mode", choices=("frontier", "eager"), default="frontier")
     parser.add_argument(
-        "--cache-mode", choices=("request", "shared"),
+        "--trip-loading-mode", choices=("frontier", "eager"), default="frontier"
+    )
+    parser.add_argument(
+        "--cache-mode",
+        choices=("request", "shared"),
         default=DEFAULT_ROUTING_CACHE_MODE,
         help="request uses the previous request-local caches; shared uses process caches",
     )
@@ -159,12 +173,14 @@ def main() -> None:
     # daily/trip/profile/heuristic caches rather than returning stored timings.
     cache_manager = RoutingCacheManager(CacheConfiguration(response_enabled=False))
     planner = TransitPlanner(transit, cache_manager=cache_manager)
+
     def resolver():
         return ProfileResolver(
             reliability,
             shared_cache=(cache_manager if args.cache_mode == "shared" else None),
             profile_version=reliability.profile_version(),
         )
+
     try:
         results = {}
         for algorithm in args.algorithms:
@@ -173,7 +189,9 @@ def main() -> None:
             warmup_state = None
             if args.cache_mode == "shared" and args.warmup != "disabled":
                 coordinator = RoutingWarmupCoordinator(
-                    cache_manager, transit, reliability,
+                    cache_manager,
+                    transit,
+                    reliability,
                     WarmupConfiguration(
                         enabled=True,
                         block_readiness=True,
@@ -189,31 +207,51 @@ def main() -> None:
                     + (perf_counter() - startup_started) * 1000
                 )
             cold = planner.get_ranked_route_result(
-                args.origin, args.destination, args.date, args.departure,
-                resolver(), algorithm=algorithm,
+                args.origin,
+                args.destination,
+                args.date,
+                args.departure,
+                resolver(),
+                algorithm=algorithm,
                 cache_mode=args.cache_mode,
-                trip_loading_mode=args.trip_loading_mode, include_diagnostics=True,
-                timeout_seconds=120, max_extra_minutes=args.max_extra_minutes,
+                trip_loading_mode=args.trip_loading_mode,
+                include_diagnostics=True,
+                timeout_seconds=120,
+                max_extra_minutes=args.max_extra_minutes,
             )
             samples = [
                 planner.get_ranked_route_result(
-                    args.origin, args.destination, args.date, args.departure,
-                    resolver(), algorithm=algorithm,
+                    args.origin,
+                    args.destination,
+                    args.date,
+                    args.departure,
+                    resolver(),
+                    algorithm=algorithm,
                     cache_mode=args.cache_mode,
                     trip_loading_mode=args.trip_loading_mode,
-                    include_diagnostics=True, timeout_seconds=120,
+                    include_diagnostics=True,
+                    timeout_seconds=120,
                     max_extra_minutes=args.max_extra_minutes,
                 )
                 for _ in range(max(1, args.runs))
             ]
             results[algorithm] = measurement(
-                samples[-1], samples, cold, startup_to_ready_ms, warmup_state,
+                samples[-1],
+                samples,
+                cold,
+                startup_to_ready_ms,
+                warmup_state,
                 startup_initialization_ms,
             )
-        results["signatures_identical"] = len({
-            json.dumps(results[name]["route_signatures"], sort_keys=True)
-            for name in args.algorithms
-        }) == 1
+        results["signatures_identical"] = (
+            len(
+                {
+                    json.dumps(results[name]["route_signatures"], sort_keys=True)
+                    for name in args.algorithms
+                }
+            )
+            == 1
+        )
         print(json.dumps(results, indent=2))
         if not results["signatures_identical"]:
             raise SystemExit(1)

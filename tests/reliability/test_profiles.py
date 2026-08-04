@@ -47,9 +47,7 @@ def test_every_profile_fallback_level(selected_level):
         def fallback_profile(self, level, *args):
             return fallback_row() if level == selected_level else None
 
-    selection = ProfileResolver(Database()).resolve(
-        "R", 0, timedelta(hours=8)
-    )
+    selection = ProfileResolver(Database()).resolve("R", 0, timedelta(hours=8))
     assert selection.fallback_level == selected_level
     assert selection.profile is not None
 

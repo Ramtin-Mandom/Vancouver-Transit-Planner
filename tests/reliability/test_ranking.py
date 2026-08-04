@@ -7,8 +7,12 @@ from src.routing.models import Itinerary, RouteLeg, Stop
 
 def journey(trip, minutes):
     a, b = Stop("A", "A"), Stop("B", "B")
-    leg = RouteLeg(trip, "R", "R", a, b, timedelta(hours=8), timedelta(hours=8, minutes=minutes))
-    return Itinerary(a, b, date(2026, 7, 27), timedelta(hours=8), leg.arrival_time, (leg,))
+    leg = RouteLeg(
+        trip, "R", "R", a, b, timedelta(hours=8), timedelta(hours=8, minutes=minutes)
+    )
+    return Itinerary(
+        a, b, date(2026, 7, 27), timedelta(hours=8), leg.arrival_time, (leg,)
+    )
 
 
 def simulation(completion, adherence=None):

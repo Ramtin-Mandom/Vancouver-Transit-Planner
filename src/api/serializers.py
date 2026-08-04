@@ -8,14 +8,14 @@ from src.routing.cli import format_gtfs_time
 from src.routing.models import ReliableSearchResult, Stop
 
 from .schemas import (
-    RouteAlternativeResponse,
     LegStopResponse,
+    RouteAlternativeResponse,
     RouteLegResponse,
     RoutePlanResponse,
     SearchCacheStatisticsResponse,
     SearchDiagnosticCountersResponse,
-    SearchDiagnosticTimingsResponse,
     SearchDiagnosticsResponse,
+    SearchDiagnosticTimingsResponse,
     SearchTimingResponse,
     StopResponse,
 )

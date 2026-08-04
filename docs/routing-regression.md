@@ -12,7 +12,7 @@ goldens was not authorized.
 
 Correctness order:
 
-1. Validate source rows against snapshot v2.
+1. Validate source rows against the current snapshot format.
 2. Compare array Dijkstra with the legacy engine at `24abaa8`.
 3. Compare validated-geographic array A* with array Dijkstra.
 4. Run randomized differential tests and the independent path validator.
@@ -30,12 +30,14 @@ python -m scripts.benchmark_routing_algorithms
 python -m scripts.benchmark_snapshot
 ```
 
-Snapshot v2 is intentionally incompatible with v1. It adds parent-station
+Snapshot v2 added parent-station
 indexes, pickup/drop-off flags, GTFS transfer edges, transfer types and minimum
 transfer times. Missing explicit bay-to-bay rules are generated only between
 members of the same parent station, with a documented default of 120 seconds.
-Render must rebuild the routing snapshot before starting the v2 application;
-the loader and `/ready` reject the v1 artifact rather than silently loading it.
+Snapshot v3 adds transfer offset indexes and declared geographic-heuristic
+metadata. The current loader accepts v2 and v3, applying compatible fallbacks
+when optional v3 metadata is unavailable. It rejects v1 and unknown formats.
+Render rebuilds the snapshot before starting the application.
 
 Snapshot A* uses a request-cached Haversine travel-time lower bound for
 single-best-route searches. Snapshot construction measures the implied speed
@@ -53,9 +55,9 @@ Full-data differential measurements, the named Coquitlam Central bay IDs, and
 production RSS/latency numbers require database/snapshot access. They must not
 be inferred from the deterministic fixture.
 
-The locally available v1 artifact identifies feed `26JUN_20260717`, SFU
+The locally available v2 artifact identifies feed `26JUN_20260717`, SFU
 Transportation Centre Bay 1 as stop `1877`, and these Coquitlam Central
 selectable stops: `11229`, `12234`, `12235`, `12321`, `12322`, `12647`, `3053`,
 `3067`, `3195`, `3204`, `3334`, `3394`, `3533`, `3769`, `3904`, `3906`, `3927`,
-`7643`, `8021`, and `8032`. This records IDs only: the v1 artifact lacks the
-data required for a valid full-data differential result.
+`7643`, `8021`, and `8032`. This records IDs only; benchmark claims still require
+a dated, reproduced run against the active code.

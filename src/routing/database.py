@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date, timedelta
-from typing import Any
-from time import perf_counter
 from threading import RLock
+from time import perf_counter
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -84,7 +84,7 @@ class TransitDatabase:
                 (str(max(1, milliseconds)),),
             )
 
-    def __enter__(self) -> "TransitDatabase":
+    def __enter__(self) -> TransitDatabase:
         self.initialize()
         return self
 
@@ -228,9 +228,7 @@ class TransitDatabase:
                      current.stop_sequence
             LIMIT %s OFFSET %s
         """
-        service_filter = (
-            sorted(service_ids) if service_ids is not None else None
-        )
+        service_filter = sorted(service_ids) if service_ids is not None else None
         with self._connection() as connection:
             rows = connection.execute(
                 query,
@@ -373,9 +371,7 @@ class TransitDatabase:
             ORDER BY current.stop_sequence
         """
         with self._connection() as connection:
-            rows = connection.execute(
-                query, (trip_id, from_stop_sequence)
-            ).fetchall()
+            rows = connection.execute(query, (trip_id, from_stop_sequence)).fetchall()
         return [_connection(row) for row in rows]
 
     def bulk_trip_connections(
@@ -417,7 +413,7 @@ class TransitDatabase:
             ORDER BY t.trip_id, ordered.stop_sequence
         """
         for offset in range(0, len(identifiers), max(1, batch_size)):
-            batch = identifiers[offset:offset + max(1, batch_size)]
+            batch = identifiers[offset : offset + max(1, batch_size)]
             with self._connection() as connection:
                 fetched = connection.execute(query, (batch,)).fetchall()
             rows.extend(_connection(row) for row in fetched)
@@ -457,35 +453,42 @@ class TransitDatabase:
         list[Connection], list[dict[str, Any]], list[Connection], dict[str, float]
     ]:
         """Run staged transit preloading in one repeatable-read snapshot."""
-        with self._search_lock:
-            with self._connection() as connection:
-                with connection.transaction():
-                    connection.execute(
-                        "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
-                    )
-                    started = perf_counter()
-                    departures = self.bulk_departures_in_window(
-                        earliest_time, latest_time, service_ids=service_ids
-                    )
-                    departure_ms = (perf_counter() - started) * 1000
-                    started = perf_counter()
-                    transfers = self.bulk_transfers()
-                    transfer_ms = (perf_counter() - started) * 1000
-                    if include_trip_connections:
-                        started = perf_counter()
-                        connections = self.bulk_trip_connections(
-                            {item.trip_id for item in departures},
-                            batch_size=trip_batch_size,
-                        )
-                        connection_ms = (perf_counter() - started) * 1000
-                    else:
-                        connections = []
-                        connection_ms = 0.0
-        return departures, transfers, connections, {
-            "departures_preload_ms": departure_ms,
-            "transfers_preload_ms": transfer_ms,
-            "trip_connections_preload_ms": connection_ms,
-        }
+        with (
+            self._search_lock,
+            self._connection() as connection,
+            connection.transaction(),
+        ):
+            connection.execute(
+                "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"
+            )
+            started = perf_counter()
+            departures = self.bulk_departures_in_window(
+                earliest_time, latest_time, service_ids=service_ids
+            )
+            departure_ms = (perf_counter() - started) * 1000
+            started = perf_counter()
+            transfers = self.bulk_transfers()
+            transfer_ms = (perf_counter() - started) * 1000
+            if include_trip_connections:
+                started = perf_counter()
+                connections = self.bulk_trip_connections(
+                    {item.trip_id for item in departures},
+                    batch_size=trip_batch_size,
+                )
+                connection_ms = (perf_counter() - started) * 1000
+            else:
+                connections = []
+                connection_ms = 0.0
+        return (
+            departures,
+            transfers,
+            connections,
+            {
+                "departures_preload_ms": departure_ms,
+                "transfers_preload_ms": transfer_ms,
+                "trip_connections_preload_ms": connection_ms,
+            },
+        )
 
     def calendar_rule(self, service_id: str) -> dict[str, Any] | None:
         query = """
@@ -497,9 +500,7 @@ class TransitDatabase:
         with self._connection() as connection:
             return connection.execute(query, (service_id,)).fetchone()
 
-    def calendar_exception(
-        self, service_id: str, service_date: date
-    ) -> int | None:
+    def calendar_exception(self, service_id: str, service_date: date) -> int | None:
         query = """
             SELECT exception_type
             FROM transit.calendar_dates
@@ -544,9 +545,7 @@ class TransitDatabase:
             ).fetchall()
         return {row["service_id"] for row in rows}
 
-    def active_rail_trip_ids(
-        self, service_ids: set[str]
-    ) -> tuple[int, set[str]]:
+    def active_rail_trip_ids(self, service_ids: set[str]) -> tuple[int, set[str]]:
         """Return active metro trips using the GTFS subway/metro route type 1."""
         if not service_ids:
             return 0, set()

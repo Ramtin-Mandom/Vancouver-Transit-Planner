@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import asyncio
+from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
+from datetime import date
 from time import perf_counter
-from contextlib import asynccontextmanager
+from typing import Annotated
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -18,8 +20,7 @@ from src.data_ingestion.config import ConfigurationError
 from src.reliability.profiles import ProfileResolver
 from src.routing.reliable import ReliableSearchTimeout
 from src.routing.service_date import current_service_date
-from src.routing.snapshot import SnapshotError
-from src.routing.snapshot import MAX_ALTERNATIVES
+from src.routing.snapshot import MAX_ALTERNATIVES, SnapshotError
 
 from .dependencies import (
     ApiServices,
@@ -57,7 +58,13 @@ async def lifespan(app: FastAPI):
             app.state.owns_services = True
             snapshot = app.state.services.snapshot
             if snapshot is not None:
-                logger.info("Routing snapshot loaded", extra={"load_ms": (perf_counter()-started)*1000, "counts": snapshot.manifest["counts"]})
+                logger.info(
+                    "Routing snapshot loaded",
+                    extra={
+                        "load_ms": (perf_counter() - started) * 1000,
+                        "counts": snapshot.manifest["counts"],
+                    },
+                )
         except (ConfigurationError, psycopg.Error, OSError, SnapshotError) as exc:
             logger.error("API routing service initialization failed")
             app.state.snapshot_failure = str(exc)[:240]
@@ -89,8 +96,10 @@ async def lifespan(app: FastAPI):
                         asyncio.shield(warmup_task),
                         timeout=coordinator.configuration.timeout_seconds,
                     )
-                except asyncio.TimeoutError:
-                    logger.warning("API cache warm-up continues after readiness timeout")
+                except TimeoutError:
+                    logger.warning(
+                        "API cache warm-up continues after readiness timeout"
+                    )
     try:
         yield
     finally:
@@ -100,10 +109,8 @@ async def lifespan(app: FastAPI):
         for task_name in ("background_warmup_task", "warmup_task"):
             task = getattr(app.state, task_name, None)
             if task is not None and not task.done():
-                try:
+                with suppress(Exception):
                     await task
-                except Exception:
-                    pass
             setattr(app.state, task_name, None)
         services = getattr(app.state, "services", None)
         if services is not None and getattr(app.state, "owns_services", False):
@@ -135,7 +142,7 @@ async def unavailable_handler(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=503,
-        content={"detail": "Database services are currently unavailable."},
+        content={"detail": str(exc) or "Routing services are currently unavailable."},
     )
 
 
@@ -151,9 +158,7 @@ async def database_error_handler(request: Request, exc: Exception) -> JSONRespon
 
 
 @app.exception_handler(ReliableSearchTimeout)
-async def timeout_handler(
-    request: Request, exc: ReliableSearchTimeout
-) -> JSONResponse:
+async def timeout_handler(request: Request, exc: ReliableSearchTimeout) -> JSONResponse:
     if not exc.log_context:
         logger.warning("Route search timed out")
     content = {"detail": "Route planning exceeded the configured timeout."}
@@ -169,7 +174,7 @@ async def timeout_handler(
 
 @app.exception_handler(Exception)
 async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled API error")
+    logger.exception("Unhandled API error")
     return JSONResponse(
         status_code=500,
         content={"detail": "An unexpected internal error occurred."},
@@ -182,31 +187,67 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-def ready(request: Request) -> dict[str, object]:
+def ready(request: Request) -> JSONResponse:
     services = getattr(request.app.state, "services", None)
     if services is None:
-        return {"ready": False, "snapshot_loaded": False,
-                "reason": getattr(request.app.state, "snapshot_failure", None) or "routing services unavailable"}
+        content = {
+            "ready": False,
+            "snapshot_loaded": False,
+            "reason": getattr(request.app.state, "snapshot_failure", None)
+            or "routing services unavailable",
+        }
+        return JSONResponse(status_code=503, content=content)
     if services.routing_unavailable_reason is not None:
-        return {"ready": False, "snapshot_loaded": False,
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ready": False,
+                "snapshot_loaded": False,
                 "autocomplete_available": True,
-                "reason": services.routing_unavailable_reason}
+                "reason": services.routing_unavailable_reason,
+            },
+        )
     if services.snapshot is not None:
         manifest = services.snapshot.manifest
-        return {"ready": True, "snapshot_loaded": True,
+        service_range = manifest.get("service_range", {})
+        latest = service_range.get("latest_date")
+        today = current_service_date()
+        if latest and today > date.fromisoformat(latest):
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "ready": False,
+                    "snapshot_loaded": True,
+                    "reason": f"GTFS feed expired on {latest}; refresh the feed and rebuild the snapshot",
+                    "service_range": service_range,
+                },
+            )
+        warning = None
+        if latest and (date.fromisoformat(latest) - today).days <= 30:
+            warning = f"GTFS feed expires on {latest}"
+        return JSONResponse(
+            status_code=200,
+            content={
+                "ready": True,
+                "snapshot_loaded": True,
                 "snapshot_version": manifest["format_version"],
                 "source_version": manifest.get("source_version"),
-                "counts": manifest["counts"]}
+                "counts": manifest["counts"],
+                "service_range": service_range,
+                "warning": warning,
+            },
+        )
     if services.warmup is None:
-        return {
+        content = {
             "ready": True,
             "gtfs_version": None,
             "essential_warmup_complete": True,
             "skytrain_warmup_complete": False,
             "background_warmup_running": False,
         }
+        return JSONResponse(status_code=200, content=content)
     state = services.warmup.state()
-    return {
+    content = {
         "ready": state.ready,
         "gtfs_version": state.gtfs_version,
         "essential_warmup_complete": state.essential_warmup_complete,
@@ -226,15 +267,17 @@ def ready(request: Request) -> dict[str, object]:
         "skytrain_cache_entries": state.skytrain_cache_entries,
         "skytrain_cache_memory_bytes": state.skytrain_cache_memory_bytes,
         "single_flight_wait_count": services.cache_manager.single_flight_wait_count
-        if services.cache_manager is not None else 0,
+        if services.cache_manager is not None
+        else 0,
     }
+    return JSONResponse(status_code=200 if state.ready else 503, content=content)
 
 
 @app.get("/stops/search", response_model=list[StopResponse])
 def search_stops(
+    services: Annotated[ApiServices, Depends(get_services)],
     query: str = Query(min_length=1),
     limit: int = Query(default=10, ge=1, le=20),
-    services: ApiServices = Depends(get_services),
 ) -> list[StopResponse]:
     trimmed_query = query.strip()
     if len(trimmed_query) < 2:
@@ -244,16 +287,14 @@ def search_stops(
         )
     return [
         serialize_stop(stop)
-        for stop in services.transit_database.search_stops(
-            trimmed_query, limit=limit
-        )
+        for stop in services.transit_database.search_stops(trimmed_query, limit=limit)
     ]
 
 
 @app.post("/routes/plan", response_model=RoutePlanResponse)
 def plan_routes(
     request: RoutePlanRequest,
-    services: ApiServices = Depends(get_services),
+    services: Annotated[ApiServices, Depends(get_services)],
 ) -> RoutePlanResponse:
     if services.planner is None:
         raise ServicesUnavailable(
@@ -262,15 +303,19 @@ def plan_routes(
     # The public API does not expose future-date planning yet. Timetable logic
     # still receives an internal Vancouver-local GTFS service date.
     service_date = current_service_date()
+    if services.snapshot is not None:
+        latest = services.snapshot.manifest.get("service_range", {}).get("latest_date")
+        if latest and service_date > date.fromisoformat(latest):
+            raise ServicesUnavailable(
+                f"GTFS feed expired on {latest}; refresh the feed and rebuild the snapshot"
+            )
     origin = services.transit_database.find_stop(request.origin_stop_id)
     if origin is None:
         raise HTTPException(
             status_code=404,
             detail=f"Unknown origin stop_id: {request.origin_stop_id}",
         )
-    destination = services.transit_database.find_stop(
-        request.destination_stop_id
-    )
+    destination = services.transit_database.find_stop(request.destination_stop_id)
     if destination is None:
         raise HTTPException(
             status_code=404,
@@ -280,10 +325,22 @@ def plan_routes(
     departure_time = request.parsed_departure_time()
     resolver = None
     if services.reliability_database is not None:
-        profile_version_lookup = getattr(services.reliability_database, "profile_version", None)
-        profile_version = str(profile_version_lookup()) if callable(profile_version_lookup) else "unknown"
-        resolver = ProfileResolver(services.reliability_database, minimum_samples=request.minimum_samples,
-            shared_cache=(services.cache_manager if request.cache_mode == "shared" else None), profile_version=profile_version)
+        profile_version_lookup = getattr(
+            services.reliability_database, "profile_version", None
+        )
+        profile_version = (
+            str(profile_version_lookup())
+            if callable(profile_version_lookup)
+            else "unknown"
+        )
+        resolver = ProfileResolver(
+            services.reliability_database,
+            minimum_samples=request.minimum_samples,
+            shared_cache=(
+                services.cache_manager if request.cache_mode == "shared" else None
+            ),
+            profile_version=profile_version,
+        )
     result = services.planner.get_ranked_route_result(
         request.origin_stop_id,
         request.destination_stop_id,

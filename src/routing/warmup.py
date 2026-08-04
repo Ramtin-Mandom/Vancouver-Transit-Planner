@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from threading import Event, RLock
@@ -16,6 +15,8 @@ from .search_data import RequestTripConnectionLoader, SearchDataIndex
 from .service_date import current_service_date
 
 logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class WarmupConfiguration:
     enabled: bool = True
@@ -26,7 +27,7 @@ class WarmupConfiguration:
     timeout_seconds: float = 30.0
 
     @classmethod
-    def from_environment(cls) -> "WarmupConfiguration":
+    def from_environment(cls) -> WarmupConfiguration:
         return cls(
             enabled=_enabled("CACHE_WARMUP_ENABLED", True),
             block_readiness=_enabled("CACHE_WARMUP_BLOCK_READINESS", True),
@@ -74,10 +75,7 @@ def ensure_static_snapshot(
         started = perf_counter()
         value = (
             MappingProxyType(dict(database.all_stop_coordinates())),
-            tuple(
-                MappingProxyType(dict(item))
-                for item in database.bulk_transfers()
-            ),
+            tuple(MappingProxyType(dict(item)) for item in database.bulk_transfers()),
         )
         cache.static_snapshots.put(gtfs_version, value)
         return value, (perf_counter() - started) * 1000
@@ -86,18 +84,30 @@ def ensure_static_snapshot(
 
 
 def ensure_daily_index(
-    cache: RoutingCacheManager, database: Any, gtfs_version: str,
+    cache: RoutingCacheManager,
+    database: Any,
+    gtfs_version: str,
     service_date: date,
 ) -> tuple[SearchDataIndex, dict[str, float]]:
     key = (gtfs_version, service_date)
     found, value = cache.daily_indexes.get(key)
     if found:
-        return value, {"total_ms": 0.0, "query_ms": 0.0, "grouping_ms": 0.0, "sorting_ms": 0.0}
+        return value, {
+            "total_ms": 0.0,
+            "query_ms": 0.0,
+            "grouping_ms": 0.0,
+            "sorting_ms": 0.0,
+        }
 
     def build():
         found_again, cached = cache.daily_indexes.get(key)
         if found_again:
-            return cached, {"total_ms": 0.0, "query_ms": 0.0, "grouping_ms": 0.0, "sorting_ms": 0.0}
+            return cached, {
+                "total_ms": 0.0,
+                "query_ms": 0.0,
+                "grouping_ms": 0.0,
+                "sorting_ms": 0.0,
+            }
         started = perf_counter()
         service_found, services = cache.service_days.get(key)
         if not service_found:
@@ -124,8 +134,11 @@ def ensure_daily_index(
 
 class RoutingWarmupCoordinator:
     def __init__(
-        self, cache: RoutingCacheManager, transit_database: Any,
-        reliability_database: Any, configuration: WarmupConfiguration | None = None,
+        self,
+        cache: RoutingCacheManager,
+        transit_database: Any,
+        reliability_database: Any,
+        configuration: WarmupConfiguration | None = None,
     ) -> None:
         self.cache = cache
         self.transit_database = transit_database
@@ -148,7 +161,9 @@ class RoutingWarmupCoordinator:
 
     def warm_essential(self, service_date: date | None = None) -> WarmupState:
         if not self.configuration.enabled:
-            self._update(ready=True, warmup_complete=True, essential_warmup_complete=True)
+            self._update(
+                ready=True, warmup_complete=True, essential_warmup_complete=True
+            )
             return self.state()
         service_date = service_date or current_service_date()
         started = perf_counter()
@@ -158,7 +173,9 @@ class RoutingWarmupCoordinator:
             version = self.transit_database.gtfs_version()
             self._update(gtfs_version=version)
             phase = "static_snapshot"
-            _, static_ms = ensure_static_snapshot(self.cache, self.transit_database, version)
+            _, static_ms = ensure_static_snapshot(
+                self.cache, self.transit_database, version
+            )
             daily_ms = 0.0
             if self.configuration.today_index and not self._stop.is_set():
                 phase = "daily_index"
@@ -204,14 +221,17 @@ class RoutingWarmupCoordinator:
             started = perf_counter()
             service_found, services = self.cache.service_days.get(key)
             if not service_found:
-                services = frozenset(self.transit_database.active_service_ids(service_date))
+                services = frozenset(
+                    self.transit_database.active_service_ids(service_date)
+                )
                 self.cache.service_days.put(key, services)
             route_count, trip_ids = self.transit_database.active_rail_trip_ids(
                 set(services or ())
             )
             before = self.cache.memory_estimate_bytes()
             loader = RequestTripConnectionLoader(
-                self.transit_database, shared_cache=self.cache,
+                self.transit_database,
+                shared_cache=self.cache,
                 gtfs_version=gtfs_version,
             )
             loader.ensure_loaded(trip_ids)

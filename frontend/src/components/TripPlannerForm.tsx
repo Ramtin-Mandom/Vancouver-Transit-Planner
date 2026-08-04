@@ -1,11 +1,6 @@
 import { useState, type FormEvent } from "react";
-import {
-  ArrowDownUp,
-  ChevronDown,
-  LoaderCircle,
-  Search
-} from "lucide-react";
-import type { RoutePlanRequest, Stop } from "../api/types";
+import { ArrowDownUp, ChevronDown, LoaderCircle, Search } from "lucide-react";
+import type { ApiStatus, RoutePlanRequest, Stop } from "../api/types";
 import { PriorityControls } from "./PriorityControls";
 import { StopAutocomplete } from "./StopAutocomplete";
 
@@ -23,6 +18,7 @@ export interface PlannerValues {
 
 interface Props {
   loading: boolean;
+  apiStatus?: ApiStatus;
   onSubmit: (request: RoutePlanRequest) => void;
 }
 
@@ -40,7 +36,7 @@ export const DEFAULT_PLANNER_VALUES: PlannerValues = {
   searchTimeoutSeconds: 30
 };
 
-export function TripPlannerForm({ loading, onSubmit }: Props) {
+export function TripPlannerForm({ loading, apiStatus = "connected", onSubmit }: Props) {
   const [values, setValues] = useState(DEFAULT_PLANNER_VALUES);
   const [errors, setErrors] = useState<Errors>({});
 
@@ -111,6 +107,7 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
           value={values.origin}
           onChange={(stop) => update("origin", stop)}
           error={errors.origin}
+          apiAvailable={apiStatus !== "unavailable"}
         />
         <button
           type="button"
@@ -127,18 +124,14 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
           value={values.destination}
           onChange={(stop) => update("destination", stop)}
           error={errors.destination}
+          apiAvailable={apiStatus !== "unavailable"}
         />
       </div>
 
       <div className="tripFields">
         <div className="fieldGroup">
           <label htmlFor="travel-date">Travel date</label>
-          <input
-            id="travel-date"
-            type="date"
-            disabled
-            aria-describedby="travel-date-status"
-          />
+          <input id="travel-date" type="date" disabled aria-describedby="travel-date-status" />
           <small id="travel-date-status" className="unavailableStatus">
             Feature not implemented
           </small>
@@ -156,12 +149,12 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
         </div>
         <div className="alternativesOption">
           <label>
-          <input
-            type="checkbox"
-            aria-label="Alternatives"
-            checked={values.includeAlternatives}
-            onChange={(event) => update("includeAlternatives", event.target.checked)}
-          />
+            <input
+              type="checkbox"
+              aria-label="Alternatives"
+              checked={values.includeAlternatives}
+              onChange={(event) => update("includeAlternatives", event.target.checked)}
+            />
             <span>
               <strong>Alternatives</strong>
               <small>Find up to 3 routes (may take longer).</small>
@@ -176,7 +169,9 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
       />
 
       <details className="advancedOptions">
-        <summary><ChevronDown size={17} /> Advanced options</summary>
+        <summary>
+          <ChevronDown size={17} /> Advanced options
+        </summary>
         <div className="advancedGrid">
           <div className="fieldGroup">
             <label htmlFor="transfer-effect">Transfer priority (%)</label>
@@ -197,7 +192,9 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
               type="number"
               min="1"
               value={values.minimumSamples}
-              onChange={(event) => update("minimumSamples", Math.max(1, Number(event.target.value)))}
+              onChange={(event) =>
+                update("minimumSamples", Math.max(1, Number(event.target.value)))
+              }
             />
             <small>Threshold for marking reliability data as sufficient.</small>
           </div>

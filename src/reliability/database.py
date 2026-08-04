@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from datetime import date
-from typing import Any
 from threading import RLock
+from typing import Any
 
 import psycopg
 from psycopg.rows import dict_row
@@ -14,7 +13,6 @@ from psycopg.rows import dict_row
 from src.data_ingestion.config import DatabaseConfig
 
 from .models import DelayObservation, ReliabilityProfile, ScheduledStop
-from .classification import EARLY_THRESHOLD_SECONDS, LATE_THRESHOLD_SECONDS
 from .policy import DEFAULT_MINIMUM_SAMPLES
 
 
@@ -58,7 +56,8 @@ class ReliabilityDatabase:
         options = (
             "-c default_transaction_read_only=on "
             f"-c statement_timeout={self._statement_timeout_ms}"
-            if readonly else None
+            if readonly
+            else None
         )
         with psycopg.connect(
             **self.config.connection_kwargs(),
@@ -173,10 +172,12 @@ class ReliabilityDatabase:
             )
             for item in values
         ]
-        with self.connection(readonly=False) as connection:
-            with connection.cursor() as cursor:
-                cursor.executemany(query, rows)
-                inserted = cursor.rowcount
+        with (
+            self.connection(readonly=False) as connection,
+            connection.cursor() as cursor,
+        ):
+            cursor.executemany(query, rows)
+            inserted = cursor.rowcount
         return inserted, len(values) - inserted
 
     def aggregate_profiles(
@@ -366,14 +367,25 @@ class ReliabilityDatabase:
             connection.execute(exact_statements[0])
             connection.execute(
                 exact_statements[1],
-                (early_threshold, early_threshold, late_threshold,
-                 late_threshold, s, s, s, minimum_samples),
+                (
+                    early_threshold,
+                    early_threshold,
+                    late_threshold,
+                    late_threshold,
+                    s,
+                    s,
+                    s,
+                    minimum_samples,
+                ),
             )
             rows = connection.execute(
                 "SELECT sample_count FROM transit.route_direction_reliability"
             ).fetchall()
-        return int(observations), int(samples), len(rows), sum(
-            row["sample_count"] < minimum_samples for row in rows
+        return (
+            int(observations),
+            int(samples),
+            len(rows),
+            sum(row["sample_count"] < minimum_samples for row in rows),
         )
 
     def profile(
@@ -390,9 +402,11 @@ class ReliabilityDatabase:
             WHERE route_id=%s AND direction_key=COALESCE(%s, -1)
               AND time_window=%s
         """
-        row = self._profile_session().execute(
-            query, (route_id, direction_id, time_window)
-        ).fetchone()
+        row = (
+            self._profile_session()
+            .execute(query, (route_id, direction_id, time_window))
+            .fetchone()
+        )
         return self._profile_from_row(row) if row else None
 
     @staticmethod
@@ -452,8 +466,11 @@ class ReliabilityDatabase:
             exact_rows = session.execute(exact_query, (routes, windows)).fetchall()
             fallback_rows = session.execute(fallback_query, (routes,)).fetchall()
         exact = {
-            (row["route_id"], row["direction_id"], row["time_window"]):
-                self._profile_from_row(row)
+            (
+                row["route_id"],
+                row["direction_id"],
+                row["time_window"],
+            ): self._profile_from_row(row)
             for row in exact_rows
         }
         fallbacks = {
@@ -479,10 +496,14 @@ class ReliabilityDatabase:
             SELECT * FROM transit.reliability_fallback_profiles
             WHERE profile_level=%s AND route_key=%s AND direction_key=%s
         """
-        return self._profile_session().execute(
-            query,
-            (level, route_id or "*", -1 if direction_id is None else direction_id),
-        ).fetchone()
+        return (
+            self._profile_session()
+            .execute(
+                query,
+                (level, route_id or "*", -1 if direction_id is None else direction_id),
+            )
+            .fetchone()
+        )
 
     def count_profiles_below(self, minimum_samples: int) -> int:
         query = """

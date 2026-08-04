@@ -2,21 +2,24 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from fastapi import Request
 
-import os
-from pathlib import Path
-
 from src.reliability.database import ReliabilityDatabase
+from src.routing.cache import RoutingCacheManager
 from src.routing.database import TransitDatabase
 from src.routing.planner import TransitPlanner
-from src.routing.cache import RoutingCacheManager
+from src.routing.snapshot import (
+    RoutingSnapshot,
+    SnapshotError,
+    SnapshotPlanner,
+    SnapshotStopCatalog,
+)
 from src.routing.warmup import RoutingWarmupCoordinator
-from src.routing.snapshot import (RoutingSnapshot, SnapshotError, SnapshotPlanner,
-                                  SnapshotStopCatalog)
 
 
 @dataclass
@@ -46,8 +49,15 @@ class ServicesUnavailable(RuntimeError):
 
 def create_services() -> ApiServices:
     snapshot_path = os.getenv("ROUTING_SNAPSHOT_PATH", "data/routing_snapshot")
-    required = os.getenv("ROUTING_SNAPSHOT_REQUIRED", "true").lower() in {"1", "true", "yes", "on"}
-    development_fallback = os.getenv("ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
+    required = os.getenv("ROUTING_SNAPSHOT_REQUIRED", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    development_fallback = os.getenv(
+        "ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK", "false"
+    ).lower() in {"1", "true", "yes", "on"}
     try:
         snapshot = RoutingSnapshot(Path(snapshot_path))
         # Reliability profiles are part of the artifact in future formats. A
@@ -59,7 +69,9 @@ def create_services() -> ApiServices:
             # only stable stop metadata. Routing remains explicitly unready.
             catalog = SnapshotStopCatalog(Path(snapshot_path))
             return ApiServices(
-                catalog, None, None,
+                catalog,
+                None,
+                None,
                 routing_unavailable_reason=str(exc)[:240],
             )
         # Explicitly opted-in local compatibility path only.

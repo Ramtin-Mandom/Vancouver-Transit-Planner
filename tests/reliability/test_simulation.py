@@ -8,14 +8,27 @@ from src.routing.models import Itinerary, RouteLeg, Stop
 def itinerary(transfer_minutes=5):
     a, b, c = Stop("A", "A"), Stop("B", "B"), Stop("C", "C")
     legs = (
-        RouteLeg("T1", "R1", "1", a, b, timedelta(hours=8), timedelta(hours=8, minutes=10)),
         RouteLeg(
-            "T2", "R2", "2", b, c,
+            "T1", "R1", "1", a, b, timedelta(hours=8), timedelta(hours=8, minutes=10)
+        ),
+        RouteLeg(
+            "T2",
+            "R2",
+            "2",
+            b,
+            c,
             timedelta(hours=8, minutes=10 + transfer_minutes),
             timedelta(hours=8, minutes=30),
         ),
     )
-    return Itinerary(a, c, date(2026, 7, 27), timedelta(hours=8), timedelta(hours=8, minutes=30), legs)
+    return Itinerary(
+        a,
+        c,
+        date(2026, 7, 27),
+        timedelta(hours=8),
+        timedelta(hours=8, minutes=30),
+        legs,
+    )
 
 
 class Resolver:
@@ -27,15 +40,36 @@ class Resolver:
         if self.insufficient:
             return ProfileSelection(None, "insufficient-data", True)
         value = ReliabilityProfile(
-            "R", "S", 0, 8, 30, self.delay, abs(self.delay), 0,
-            self.delay, self.delay, 0, 1, 0,
+            "R",
+            "S",
+            0,
+            8,
+            30,
+            self.delay,
+            abs(self.delay),
+            0,
+            self.delay,
+            self.delay,
+            0,
+            1,
+            0,
         )
         return ProfileSelection(value, "exact", False)
 
 
 def test_successful_and_missed_transfer():
-    assert simulate_itinerary(itinerary(), Resolver(60), simulations=10).completion_probability == 1
-    assert simulate_itinerary(itinerary(), Resolver(600), simulations=10).completion_probability == 0
+    assert (
+        simulate_itinerary(
+            itinerary(), Resolver(60), simulations=10
+        ).completion_probability
+        == 1
+    )
+    assert (
+        simulate_itinerary(
+            itinerary(), Resolver(600), simulations=10
+        ).completion_probability
+        == 0
+    )
 
 
 def test_fixed_seed_is_deterministic_and_insufficient_is_flagged():
@@ -46,7 +80,5 @@ def test_fixed_seed_is_deterministic_and_insufficient_is_flagged():
 
 
 def test_signed_delays_remain_signed_in_simulation():
-    result = simulate_itinerary(
-        itinerary(), Resolver(-120), simulations=10, seed=1
-    )
+    result = simulate_itinerary(itinerary(), Resolver(-120), simulations=10, seed=1)
     assert result.expected_arrival_delay_seconds == -120

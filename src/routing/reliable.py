@@ -19,25 +19,25 @@ from itertools import count
 from time import perf_counter
 from typing import Any
 
-from src.reliability.classification import TIME_WINDOWS, time_window
+from src.reliability.classification import TIME_WINDOWS
 
+from .cache import RoutingCacheManager
 from .models import (
     Connection,
     Itinerary,
     ReliableAlternative,
     ReliableSearchResult,
     RouteLeg,
-    SearchTiming,
     SearchCacheStatistics,
     SearchDiagnosticCounters,
     SearchDiagnostics,
     SearchDiagnosticTimings,
+    SearchTiming,
     Stop,
 )
-from .route_results import itinerary_identity
 from .reconstruction import build_leg_stops, load_connection_stops
+from .route_results import itinerary_identity
 from .search_data import RequestTripConnectionLoader, SearchDataIndex
-from .cache import RoutingCacheManager
 from .warmup import ensure_daily_index, ensure_static_snapshot
 
 EPSILON = 1e-9
@@ -50,8 +50,12 @@ logger = logging.getLogger(__name__)
 class ReliableSearchTimeout(RuntimeError):
     """Raised when a reliable search exceeds its configured wall-clock limit."""
 
-    def __init__(self, message: str, diagnostics: SearchDiagnostics | None = None,
-                 log_context: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        diagnostics: SearchDiagnostics | None = None,
+        log_context: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.diagnostics = diagnostics
         self.log_context = log_context or {}
@@ -87,7 +91,11 @@ def _dominates(left: _Label, right: _Label) -> bool:
 
 class ParetoTransitSearch:
     def __init__(
-        self, database: Any, calendar: Any, resolver: Any, *,
+        self,
+        database: Any,
+        calendar: Any,
+        resolver: Any,
+        *,
         cache_manager: RoutingCacheManager | None = None,
         gtfs_version: str = "unknown",
     ) -> None:
@@ -149,33 +157,33 @@ class ParetoTransitSearch:
         started = perf_counter()
         is_first_shared_request = (
             self.cache_manager.register_search()
-            if self.cache_manager is not None else False
+            if self.cache_manager is not None
+            else False
         )
         deadline = started + timeout_seconds
-        timings = (
-            vars(SearchDiagnosticTimings()).copy()
-            if include_diagnostics else {}
-        )
+        timings = vars(SearchDiagnosticTimings()).copy() if include_diagnostics else {}
         counters = (
-            vars(SearchDiagnosticCounters()).copy()
-            if include_diagnostics else {}
+            vars(SearchDiagnosticCounters()).copy() if include_diagnostics else {}
         )
         if include_diagnostics:
             counters["algorithm"] = self.algorithm_name
-        caches = (
-            vars(SearchCacheStatistics()).copy()
-            if include_diagnostics else {}
-        )
+        caches = vars(SearchCacheStatistics()).copy() if include_diagnostics else {}
 
         def snapshot() -> SearchDiagnostics | None:
             if not include_diagnostics:
                 return None
             try:
                 if frontier_loader is not None:
-                    caches["trip_request_cache_hits"] = frontier_loader.request_cache_hits
+                    caches["trip_request_cache_hits"] = (
+                        frontier_loader.request_cache_hits
+                    )
                     caches["trip_shared_cache_hits"] = frontier_loader.shared_cache_hits
-                    caches["trip_shared_cache_misses"] = frontier_loader.shared_cache_misses
-                    caches["trip_negative_cache_hits"] = frontier_loader.negative_cache_hits
+                    caches["trip_shared_cache_misses"] = (
+                        frontier_loader.shared_cache_misses
+                    )
+                    caches["trip_negative_cache_hits"] = (
+                        frontier_loader.negative_cache_hits
+                    )
                     timings["frontier_trip_query_ms"] = frontier_loader.query_ms
                     timings["frontier_trip_indexing_ms"] = frontier_loader.indexing_ms
                     counters["unique_frontier_trips_requested"] = len(
@@ -207,7 +215,9 @@ class ParetoTransitSearch:
                 caches["reliability_cache_misses"] = shared_stats["profiles"].misses
                 caches["heuristic_cache_hits"] = shared_stats["heuristics"].hits
                 caches["heuristic_cache_misses"] = shared_stats["heuristics"].misses
-                caches["cache_evictions"] = sum(item.evictions for item in shared_stats.values())
+                caches["cache_evictions"] = sum(
+                    item.evictions for item in shared_stats.values()
+                )
                 caches["shared_cache_memory_estimate_bytes"] = (
                     self.cache_manager.memory_estimate_bytes()
                 )
@@ -223,9 +233,11 @@ class ParetoTransitSearch:
                     )
             elapsed = (perf_counter() - started) * 1000
             timings["measured_search_ms"] = elapsed
-            classified = sum(value for name, value in timings.items() if name not in {
-                "measured_search_ms", "unclassified_search_ms"
-            })
+            classified = sum(
+                value
+                for name, value in timings.items()
+                if name not in {"measured_search_ms", "unclassified_search_ms"}
+            )
             timings["unclassified_search_ms"] = max(0.0, elapsed - classified)
             try:
                 counters["total_label_buckets"] = len(labels)
@@ -252,7 +264,9 @@ class ParetoTransitSearch:
                     logger.warning("Profiled reliable search timed out", extra=context)
                 raise ReliableSearchTimeout(
                     f"reliable search exceeded {timeout_seconds:g} seconds; "
-                    "try a shorter horizon or fewer transfers", diagnostics, context
+                    "try a shorter horizon or fewer transfers",
+                    diagnostics,
+                    context,
                 )
 
         setup_started = perf_counter() if include_diagnostics else 0.0
@@ -263,7 +277,9 @@ class ParetoTransitSearch:
         if callable(resolver_timeout):
             resolver_timeout(max(1, int(timeout_seconds * 1000)))
         if include_diagnostics:
-            timings["statement_timeout_setup_ms"] += (perf_counter() - setup_started) * 1000
+            timings["statement_timeout_setup_ms"] += (
+                perf_counter() - setup_started
+            ) * 1000
         lookup_started = perf_counter() if include_diagnostics else 0.0
         origin = self.database.find_stop(origin_stop_id)
         check_deadline()
@@ -280,18 +296,19 @@ class ParetoTransitSearch:
         service_day_key = (self.gtfs_version, service_date)
         service_found, service_value = (
             self.cache_manager.service_days.get(service_day_key)
-            if self.cache_manager is not None else (False, None)
+            if self.cache_manager is not None
+            else (False, None)
         )
         if service_found:
             active = set(service_value or ())
         else:
             active = active_lookup(service_date) if callable(active_lookup) else None
             if self.cache_manager is not None and active is not None:
-                self.cache_manager.service_days.put(
-                    service_day_key, frozenset(active)
-                )
+                self.cache_manager.service_days.put(service_day_key, frozenset(active))
         if include_diagnostics:
-            timings["active_service_lookup_ms"] += (perf_counter() - active_started) * 1000
+            timings["active_service_lookup_ms"] += (
+                perf_counter() - active_started
+            ) * 1000
         departure_cache: dict[str, list[Connection]] = {}
         trip_cache: dict[tuple[str, int], list[Connection]] = {}
         transfer_cache: dict[str, list[dict[str, Any]]] = {}
@@ -304,8 +321,10 @@ class ParetoTransitSearch:
         daily_loader = getattr(self.database, "bulk_daily_departures", None)
         used_shared_index = False
         if (
-            self.cache_manager is not None and callable(daily_loader)
-            and callable(bulk_transfers) and callable(bulk_trips)
+            self.cache_manager is not None
+            and callable(daily_loader)
+            and callable(bulk_transfers)
+            and callable(bulk_trips)
         ):
             preload_started = perf_counter()
             (static_stops, loaded_transfers_tuple), static_ms = ensure_static_snapshot(
@@ -314,7 +333,6 @@ class ParetoTransitSearch:
             if include_diagnostics:
                 timings["static_snapshot_build_ms"] += static_ms
             loaded_transfers = list(loaded_transfers_tuple)
-            daily_key = (self.gtfs_version, service_date)
             data_index, daily_timings = ensure_daily_index(
                 self.cache_manager, self.database, self.gtfs_version, service_date
             )
@@ -324,13 +342,15 @@ class ParetoTransitSearch:
                 timings["daily_departure_sorting_ms"] += daily_timings["sorting_ms"]
                 timings["daily_departure_index_build_ms"] += daily_timings["total_ms"]
             loaded_departures = [
-                item for stop_id in data_index.departures_by_stop
+                item
+                for stop_id in data_index.departures_by_stop
                 for item in data_index.departures(stop_id, departure_time, horizon)
             ]
             loaded_connections = []
             trip_ids = {item.trip_id for item in loaded_departures}
             frontier_loader = RequestTripConnectionLoader(
-                self.database, shared_cache=self.cache_manager,
+                self.database,
+                shared_cache=self.cache_manager,
                 gtfs_version=self.gtfs_version,
             )
             used_shared_index = True
@@ -357,8 +377,9 @@ class ParetoTransitSearch:
                 caches["unique_departures_loaded"] = len(loaded_departures)
                 caches["unique_transfers_loaded"] = len(loaded_transfers)
                 caches["request_index_memory_estimate_bytes"] = 0
-        if (not used_shared_index and
-                all(callable(item) for item in (bulk_departures, bulk_transfers, bulk_trips))):
+        if not used_shared_index and all(
+            callable(item) for item in (bulk_departures, bulk_transfers, bulk_trips)
+        ):
             preload_started = perf_counter()
             coordinated_loader = getattr(self.database, "bulk_search_data", None)
             if callable(coordinated_loader):
@@ -368,7 +389,9 @@ class ParetoTransitSearch:
                     loaded_connections,
                     transit_phase_timings,
                 ) = coordinated_loader(
-                    departure_time, horizon, service_ids=active,
+                    departure_time,
+                    horizon,
+                    service_ids=active,
                     trip_batch_size=2000,
                     include_trip_connections=trip_loading_mode == "eager",
                 )
@@ -386,7 +409,8 @@ class ParetoTransitSearch:
                 phase_started = perf_counter()
                 loaded_connections = (
                     bulk_trips({item.trip_id for item in loaded_departures})
-                    if trip_loading_mode == "eager" else []
+                    if trip_loading_mode == "eager"
+                    else []
                 )
                 if include_diagnostics:
                     timings["departures_preload_ms"] = departure_ms
@@ -396,15 +420,14 @@ class ParetoTransitSearch:
                     ) * 1000
             trip_ids = {item.trip_id for item in loaded_departures}
             if include_diagnostics:
-                caches["bulk_departure_query_count"] = (
-                    0 if active == set() else 1
-                )
+                caches["bulk_departure_query_count"] = 0 if active == set() else 1
                 caches["unique_departures_loaded"] = len(set(loaded_departures))
                 caches["bulk_transfer_query_count"] = 1
                 caches["unique_transfers_loaded"] = len(loaded_transfers)
                 caches["bulk_trip_query_count"] = (
                     (len(trip_ids) + 1999) // 2000
-                    if trip_loading_mode == "eager" and trip_ids else 0
+                    if trip_loading_mode == "eager" and trip_ids
+                    else 0
                 )
                 caches["unique_trips_loaded"] = len(trip_ids)
                 caches["unique_connections_loaded"] = len(set(loaded_connections))
@@ -421,9 +444,7 @@ class ParetoTransitSearch:
                 if include_diagnostics:
                     caches["bulk_profile_query_count"] = profile_query_count
             if include_diagnostics:
-                profile_ms = (
-                    perf_counter() - phase_started
-                ) * 1000
+                profile_ms = (perf_counter() - phase_started) * 1000
                 timings["reliability_preload_ms"] = profile_ms
                 if profile_query_count:
                     timings["reliability_snapshot_build_ms"] = profile_ms
@@ -432,7 +453,8 @@ class ParetoTransitSearch:
             )
             if trip_loading_mode == "frontier":
                 frontier_loader = RequestTripConnectionLoader(
-                    self.database, shared_cache=self.cache_manager,
+                    self.database,
+                    shared_cache=self.cache_manager,
                     gtfs_version=self.gtfs_version,
                 )
             if include_diagnostics:
@@ -441,7 +463,8 @@ class ParetoTransitSearch:
                 ) * 1000
                 timings["eager_trip_preload_ms"] = (
                     timings["trip_connections_preload_ms"]
-                    if trip_loading_mode == "eager" else 0.0
+                    if trip_loading_mode == "eager"
+                    else 0.0
                 )
                 timings["preload_total_ms"] = (perf_counter() - preload_started) * 1000
                 caches["request_index_memory_estimate_bytes"] = (
@@ -456,11 +479,13 @@ class ParetoTransitSearch:
                 connection.to_stop_id for connection in loaded_departures
             )
             coordinate_stop_ids.update(
-                transfer["from_stop_id"] for transfer in loaded_transfers
+                transfer["from_stop_id"]
+                for transfer in loaded_transfers
                 if transfer.get("from_stop_id") is not None
             )
             coordinate_stop_ids.update(
-                transfer["to_stop_id"] for transfer in loaded_transfers
+                transfer["to_stop_id"]
+                for transfer in loaded_transfers
                 if transfer.get("to_stop_id") is not None
             )
         self._prepare_queue_ordering(origin, destination, coordinate_stop_ids)
@@ -486,18 +511,27 @@ class ParetoTransitSearch:
                 rows, offset = [], 0
                 while True:
                     batch = self.database.departures_from(
-                        stop_id, departure_time, limit=256, offset=offset,
+                        stop_id,
+                        departure_time,
+                        limit=256,
+                        offset=offset,
                         service_ids=active,
                     )
-                    rows.extend(item for item in batch if item.departure_time <= horizon)
-                    if len(batch) < 256 or (batch and batch[-1].departure_time > horizon):
+                    rows.extend(
+                        item for item in batch if item.departure_time <= horizon
+                    )
+                    if len(batch) < 256 or (
+                        batch and batch[-1].departure_time > horizon
+                    ):
                         break
                     offset += 256
             departure_cache[stop_id] = rows
             if include_diagnostics:
                 caches["departure_query_count"] += 1
                 caches["departure_rows_loaded"] += len(rows)
-                timings["departure_queries_ms"] += (perf_counter() - query_started) * 1000
+                timings["departure_queries_ms"] += (
+                    perf_counter() - query_started
+                ) * 1000
             check_deadline()
             return rows
 
@@ -510,7 +544,8 @@ class ParetoTransitSearch:
                 if include_diagnostics:
                     caches["trip_cache_hits"] += 1
                 return [
-                    item for item in frontier_loader.connections_for(first.trip_id)
+                    item
+                    for item in frontier_loader.connections_for(first.trip_id)
                     if item.from_stop_sequence >= first.from_stop_sequence
                 ]
             if data_index is not None:
@@ -524,7 +559,9 @@ class ParetoTransitSearch:
                     caches["trip_cache_misses"] += 1
                     caches["trip_query_count"] += 1
                     caches["trip_connection_rows_loaded"] += len(trip_cache[key])
-                    timings["trip_queries_ms"] += (perf_counter() - query_started) * 1000
+                    timings["trip_queries_ms"] += (
+                        perf_counter() - query_started
+                    ) * 1000
             elif include_diagnostics:
                 caches["trip_cache_hits"] += 1
             return trip_cache[key]
@@ -542,7 +579,9 @@ class ParetoTransitSearch:
                     caches["transfer_cache_misses"] += 1
                     caches["transfer_query_count"] += 1
                     caches["transfer_rows_loaded"] += len(transfer_cache[stop_id])
-                    timings["transfer_queries_ms"] += (perf_counter() - query_started) * 1000
+                    timings["transfer_queries_ms"] += (
+                        perf_counter() - query_started
+                    ) * 1000
             elif include_diagnostics:
                 caches["transfer_cache_hits"] += 1
             return transfer_cache[stop_id]
@@ -561,14 +600,22 @@ class ParetoTransitSearch:
                     caches["profile_resolver_calls"] += 1
                 profile_cache[key] = self.resolver.resolve(*key)
                 if include_diagnostics:
-                    timings["profile_resolution_ms"] += (perf_counter() - profile_started) * 1000
+                    timings["profile_resolution_ms"] += (
+                        perf_counter() - profile_started
+                    ) * 1000
                 check_deadline()
             elif include_diagnostics:
                 caches["profile_cache_hits"] += 1
             return profile_cache[key]
 
         initial = _Label(
-            origin_stop_id, departure_time, 0.0, 0, None, (), (),
+            origin_stop_id,
+            departure_time,
+            0.0,
+            0,
+            None,
+            (),
+            (),
             frozenset((origin_stop_id,)),
         )
         labels: dict[tuple[str, str | None], list[_Label]] = {
@@ -579,13 +626,22 @@ class ParetoTransitSearch:
         heapq.heappush(
             queue,
             (
-                self._queue_priority(initial), initial.arrival, 0.0, 0,
-                next(serial), initial,
+                self._queue_priority(initial),
+                initial.arrival,
+                0.0,
+                0,
+                next(serial),
+                initial,
             ),
         )
         if include_diagnostics:
-            counters.update(queue_pushes=1, labels_created=1, labels_accepted=1,
-                            maximum_queue_size=1, maximum_labels_in_bucket=1)
+            counters.update(
+                queue_pushes=1,
+                labels_created=1,
+                labels_accepted=1,
+                maximum_queue_size=1,
+                maximum_labels_in_bucket=1,
+            )
         destinations: list[_Label] = []
         arrival_cutoff: timedelta | None = None
         pruned = 0
@@ -608,7 +664,9 @@ class ParetoTransitSearch:
                 pruned += 1
                 if include_diagnostics:
                     counters["labels_pruned"] += 1
-                    timings["label_processing_ms"] += (perf_counter() - add_started) * 1000
+                    timings["label_processing_ms"] += (
+                        perf_counter() - add_started
+                    ) * 1000
                 return
             survivors = []
             for other in bucket:
@@ -620,25 +678,31 @@ class ParetoTransitSearch:
             survivors.append(label)
             labels[key] = survivors
             if label.stop_id == destination_stop_id:
-                candidate_cutoff = label.arrival + timedelta(
-                    minutes=max_extra_minutes
-                )
+                candidate_cutoff = label.arrival + timedelta(minutes=max_extra_minutes)
                 arrival_cutoff = min(
                     arrival_cutoff or candidate_cutoff, candidate_cutoff
                 )
             heapq.heappush(
                 queue,
                 (
-                    self._queue_priority(label), label.arrival,
-                    label.reliability_cost, label.transfers, next(serial), label,
+                    self._queue_priority(label),
+                    label.arrival,
+                    label.reliability_cost,
+                    label.transfers,
+                    next(serial),
+                    label,
                 ),
             )
             if include_diagnostics:
                 counters["labels_pruned"] += len(bucket) - len(survivors)
                 counters["labels_accepted"] += 1
                 counters["queue_pushes"] += 1
-                counters["maximum_queue_size"] = max(counters["maximum_queue_size"], len(queue))
-                counters["maximum_labels_in_bucket"] = max(counters["maximum_labels_in_bucket"], len(survivors))
+                counters["maximum_queue_size"] = max(
+                    counters["maximum_queue_size"], len(queue)
+                )
+                counters["maximum_labels_in_bucket"] = max(
+                    counters["maximum_labels_in_bucket"], len(survivors)
+                )
                 timings["label_processing_ms"] += (perf_counter() - add_started) * 1000
 
         while queue:
@@ -647,7 +711,9 @@ class ParetoTransitSearch:
             priority, _, _, _, _, label = heapq.heappop(queue)
             if include_diagnostics:
                 counters["queue_pops"] += 1
-                timings["queue_processing_ms"] += (perf_counter() - queue_started) * 1000
+                timings["queue_processing_ms"] += (
+                    perf_counter() - queue_started
+                ) * 1000
             if label not in labels.get((label.stop_id, label.current_trip_id), ()):
                 if include_diagnostics:
                     counters["stale_labels_skipped"] += 1
@@ -682,28 +748,33 @@ class ParetoTransitSearch:
                 arrival = label.arrival + timedelta(
                     seconds=transfer["min_transfer_time"] or 0
                 )
-                effective_horizon = min(
-                    horizon, arrival_cutoff or timedelta.max
-                )
+                effective_horizon = min(horizon, arrival_cutoff or timedelta.max)
                 if arrival <= effective_horizon:
                     if include_diagnostics:
                         counters["walking_transfer_labels_created"] += 1
-                    add(_Label(
-                        target, arrival, label.reliability_cost, label.transfers,
-                        None, label.rides, label.selections,
-                        label.visited | {target},
-                    ))
+                    add(
+                        _Label(
+                            target,
+                            arrival,
+                            label.reliability_cost,
+                            label.transfers,
+                            None,
+                            label.rides,
+                            label.selections,
+                            label.visited | {target},
+                        )
+                    )
             if include_diagnostics:
-                timings["transfer_expansion_ms"] += (perf_counter() - transfer_started) * 1000
+                timings["transfer_expansion_ms"] += (
+                    perf_counter() - transfer_started
+                ) * 1000
             departure_started = perf_counter() if include_diagnostics else 0.0
             boardable: list[tuple[Connection, int, timedelta]] = []
             rules = transfers(label.stop_id)
             for first in departures(label.stop_id):
                 if include_diagnostics:
                     counters["departures_examined"] += 1
-                effective_horizon = min(
-                    horizon, arrival_cutoff or timedelta.max
-                )
+                effective_horizon = min(horizon, arrival_cutoff or timedelta.max)
                 if (
                     first.departure_time < label.arrival
                     or first.departure_time > effective_horizon
@@ -717,11 +788,14 @@ class ParetoTransitSearch:
                     first.service_id, service_date
                 ):
                     continue
-                new_transfer = int(bool(label.rides) and first.trip_id != label.current_trip_id)
+                new_transfer = int(
+                    bool(label.rides) and first.trip_id != label.current_trip_id
+                )
                 if label.transfers + new_transfer > max_transfers:
                     continue
                 matching = [
-                    rule for rule in rules
+                    rule
+                    for rule in rules
                     if rule["to_stop_id"] == label.stop_id
                     and rule.get("from_trip_id") in (None, label.current_trip_id)
                     and rule.get("to_trip_id") in (None, first.trip_id)
@@ -770,23 +844,30 @@ class ParetoTransitSearch:
                     selection = profile(connection, current)
                     probability = (
                         selection.profile.reliability_probability
-                        if selection.profile is not None else 0.0
+                        if selection.profile is not None
+                        else 0.0
                     )
-                    add(_Label(
-                        current,
-                        connection.arrival_time,
-                        label.reliability_cost
-                        - math.log(max(probability, EPSILON)),
-                        label.transfers + new_transfer,
-                        first.trip_id,
-                        label.rides + tuple(segment),
-                        label.selections + (selection,),
-                        label.visited | {current},
-                    ))
+                    add(
+                        _Label(
+                            current,
+                            connection.arrival_time,
+                            label.reliability_cost
+                            - math.log(max(probability, EPSILON)),
+                            label.transfers + new_transfer,
+                            first.trip_id,
+                            label.rides + tuple(segment),
+                            label.selections + (selection,),
+                            label.visited | {current},
+                        )
+                    )
                 if include_diagnostics:
-                    timings["trip_scanning_ms"] += (perf_counter() - trip_started) * 1000
+                    timings["trip_scanning_ms"] += (
+                        perf_counter() - trip_started
+                    ) * 1000
             if include_diagnostics:
-                timings["departure_scanning_ms"] += (perf_counter() - departure_started) * 1000
+                timings["departure_scanning_ms"] += (
+                    perf_counter() - departure_started
+                ) * 1000
 
         searched_at = perf_counter()
         if include_diagnostics:
@@ -805,7 +886,8 @@ class ParetoTransitSearch:
                     frontier_loader.loaded_trip_ids
                 )
                 counters["unique_frontier_trips_loaded"] = len(
-                    frontier_loader.loaded_trip_ids - frontier_loader.known_empty_trip_ids
+                    frontier_loader.loaded_trip_ids
+                    - frontier_loader.known_empty_trip_ids
                 )
                 counters["frontier_connections_loaded"] = (
                     frontier_loader.connections_loaded
@@ -818,7 +900,8 @@ class ParetoTransitSearch:
                 )
                 counters["average_frontier_trip_batch_size"] = (
                     sum(frontier_loader.batch_sizes) / len(frontier_loader.batch_sizes)
-                    if frontier_loader.batch_sizes else 0.0
+                    if frontier_loader.batch_sizes
+                    else 0.0
                 )
                 counters["maximum_frontier_trip_batch_size"] = max(
                     frontier_loader.batch_sizes, default=0
@@ -837,9 +920,7 @@ class ParetoTransitSearch:
                 )
                 caches["bulk_trip_query_count"] = frontier_loader.query_count
                 caches["unique_trips_loaded"] = len(frontier_loader.loaded_trip_ids)
-                caches["unique_connections_loaded"] = (
-                    frontier_loader.connections_loaded
-                )
+                caches["unique_connections_loaded"] = frontier_loader.connections_loaded
                 caches["request_index_memory_estimate_bytes"] += (
                     frontier_loader.memory_estimate_bytes
                 )
@@ -853,7 +934,8 @@ class ParetoTransitSearch:
             cutoff = fastest + timedelta(minutes=max_extra_minutes)
             destinations = [item for item in destinations if item.arrival <= cutoff]
             destinations = [
-                item for item in destinations
+                item
+                for item in destinations
                 if not any(
                     other is not item
                     and other.arrival <= item.arrival
@@ -868,50 +950,68 @@ class ParetoTransitSearch:
                 )
             ]
         if include_diagnostics:
-            timings["destination_filtering_ms"] += (perf_counter() - destination_started) * 1000
+            timings["destination_filtering_ms"] += (
+                perf_counter() - destination_started
+            ) * 1000
         alternatives: list[ReliableAlternative] = []
         seen: set[tuple[tuple[str, str, str], ...]] = set()
         for label in sorted(
             destinations,
             key=lambda item: (
-                item.reliability_cost, item.arrival, item.transfers,
-                tuple((hop.trip_id, hop.from_stop_id, hop.to_stop_id) for hop in item.rides),
+                item.reliability_cost,
+                item.arrival,
+                item.transfers,
+                tuple(
+                    (hop.trip_id, hop.from_stop_id, hop.to_stop_id)
+                    for hop in item.rides
+                ),
             ),
         ):
             reconstruction_started = perf_counter() if include_diagnostics else 0.0
             itinerary = self._reconstruct(
-                origin, destination, service_date, departure_time, label,
+                origin,
+                destination,
+                service_date,
+                departure_time,
+                label,
                 timings if include_diagnostics else None,
             )
             if include_diagnostics:
-                timings["reconstruction_ms"] += (perf_counter() - reconstruction_started) * 1000
+                timings["reconstruction_ms"] += (
+                    perf_counter() - reconstruction_started
+                ) * 1000
                 counters["alternatives_reconstructed"] += 1
             identifier = itinerary_identity(itinerary)
             if not identifier or identifier in seen:
                 continue
             seen.add(identifier)
-            alternatives.append(ReliableAlternative(
-                itinerary,
-                math.exp(-label.reliability_cost),
-                label.reliability_cost,
-                label.selections,
-            ))
+            alternatives.append(
+                ReliableAlternative(
+                    itinerary,
+                    math.exp(-label.reliability_cost),
+                    label.reliability_cost,
+                    label.selections,
+                )
+            )
         ranked_at = perf_counter()
         returned = alternatives if limit is None else alternatives[:limit]
         if include_diagnostics:
             counters["alternatives_returned"] = len(returned)
         diagnostics = snapshot()
         if include_diagnostics:
-            logger.info("Profiled reliable search completed", extra={
-                "origin_stop_id": origin_stop_id,
-                "destination_stop_id": destination_stop_id,
-                "service_date": str(service_date),
-                "departure_time": str(departure_time),
-                "total_ms": (ranked_at - started) * 1000,
-                "search_ms": (searched_at - loaded_at) * 1000,
-                "timed_out": False,
-                "diagnostics": diagnostics,
-            })
+            logger.info(
+                "Profiled reliable search completed",
+                extra={
+                    "origin_stop_id": origin_stop_id,
+                    "destination_stop_id": destination_stop_id,
+                    "service_date": str(service_date),
+                    "departure_time": str(departure_time),
+                    "total_ms": (ranked_at - started) * 1000,
+                    "search_ms": (searched_at - loaded_at) * 1000,
+                    "timed_out": False,
+                    "diagnostics": diagnostics,
+                },
+            )
         return ReliableSearchResult(
             tuple(returned),
             SearchTiming(
@@ -925,8 +1025,12 @@ class ParetoTransitSearch:
         )
 
     def _reconstruct(
-        self, origin: Stop, destination: Stop, service_date: date,
-        departure: timedelta, label: _Label,
+        self,
+        origin: Stop,
+        destination: Stop,
+        service_date: date,
+        departure: timedelta,
+        label: _Label,
         diagnostic_timings: dict[str, float] | None = None,
     ) -> Itinerary:
         legs: list[RouteLeg] = []
@@ -942,7 +1046,9 @@ class ParetoTransitSearch:
             last = first
             leg_rides = [first]
             index += 1
-            while index < len(label.rides) and label.rides[index].trip_id == first.trip_id:
+            while (
+                index < len(label.rides) and label.rides[index].trip_id == first.trip_id
+            ):
                 last = label.rides[index]
                 leg_rides.append(last)
                 index += 1
@@ -950,11 +1056,19 @@ class ParetoTransitSearch:
             leg_destination = stops_by_id.get(last.to_stop_id)
             if leg_origin is None or leg_destination is None:
                 raise RuntimeError("a routed stop disappeared during reconstruction")
-            legs.append(RouteLeg(
-                first.trip_id, first.route_id, first.route_name,
-                leg_origin, leg_destination, first.departure_time, last.arrival_time,
-                first.direction_id, build_leg_stops(leg_rides, stops_by_id),
-            ))
+            legs.append(
+                RouteLeg(
+                    first.trip_id,
+                    first.route_id,
+                    first.route_name,
+                    leg_origin,
+                    leg_destination,
+                    first.departure_time,
+                    last.arrival_time,
+                    first.direction_id,
+                    build_leg_stops(leg_rides, stops_by_id),
+                )
+            )
         return Itinerary(
             origin, destination, service_date, departure, label.arrival, tuple(legs)
         )

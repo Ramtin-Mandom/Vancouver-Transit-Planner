@@ -9,14 +9,11 @@ from __future__ import annotations
 
 import os
 from collections import OrderedDict
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass
+from sys import getsizeof
 from threading import Event, RLock
 from time import monotonic
-from sys import getsizeof
-from typing import Callable, Generic, Hashable, TypeVar
-
-K = TypeVar("K", bound=Hashable)
-V = TypeVar("V")
 
 # Change this one value to switch the application's default caching path.
 # Individual API requests and benchmark runs can still override it.
@@ -39,7 +36,11 @@ def _positive_float(name: str, default: float) -> float:
 
 def _enabled(name: str, default: bool) -> bool:
     value = os.getenv(name)
-    return default if value is None else value.strip().lower() in {"1", "true", "yes", "on"}
+    return (
+        default
+        if value is None
+        else value.strip().lower() in {"1", "true", "yes", "on"}
+    )
 
 
 @dataclass(frozen=True)
@@ -57,18 +58,28 @@ class CacheConfiguration:
     response_enabled: bool = True
 
     @classmethod
-    def from_environment(cls) -> "CacheConfiguration":
+    def from_environment(cls) -> CacheConfiguration:
         return cls(
             trip_capacity=_positive_int("ROUTING_TRIP_CACHE_CAPACITY", 10_000),
             trip_ttl_seconds=_positive_float("ROUTING_TRIP_CACHE_TTL_SECONDS", 3600),
-            negative_trip_ttl_seconds=_positive_float("ROUTING_NEGATIVE_TRIP_CACHE_TTL_SECONDS", 60),
+            negative_trip_ttl_seconds=_positive_float(
+                "ROUTING_NEGATIVE_TRIP_CACHE_TTL_SECONDS", 60
+            ),
             daily_index_capacity=_positive_int("ROUTING_DAILY_INDEX_CAPACITY", 3),
-            heuristic_capacity=_positive_int("ROUTING_HEURISTIC_CACHE_CAPACITY", 50_000),
-            heuristic_ttl_seconds=_positive_float("ROUTING_HEURISTIC_CACHE_TTL_SECONDS", 3600),
+            heuristic_capacity=_positive_int(
+                "ROUTING_HEURISTIC_CACHE_CAPACITY", 50_000
+            ),
+            heuristic_ttl_seconds=_positive_float(
+                "ROUTING_HEURISTIC_CACHE_TTL_SECONDS", 3600
+            ),
             profile_capacity=_positive_int("ROUTING_PROFILE_CACHE_CAPACITY", 20_000),
-            profile_ttl_seconds=_positive_float("ROUTING_PROFILE_CACHE_TTL_SECONDS", 300),
+            profile_ttl_seconds=_positive_float(
+                "ROUTING_PROFILE_CACHE_TTL_SECONDS", 300
+            ),
             response_capacity=_positive_int("ROUTING_RESPONSE_CACHE_CAPACITY", 256),
-            response_ttl_seconds=_positive_float("ROUTING_RESPONSE_CACHE_TTL_SECONDS", 60),
+            response_ttl_seconds=_positive_float(
+                "ROUTING_RESPONSE_CACHE_TTL_SECONDS", 60
+            ),
             response_enabled=_enabled("ROUTING_RESPONSE_CACHE_ENABLED", True),
         )
 
@@ -84,13 +95,13 @@ class CacheStatistics:
 
 
 @dataclass
-class _Entry(Generic[V]):
+class _Entry[V]:
     value: V
     expires_at: float
     negative: bool = False
 
 
-class BoundedTTLCache(Generic[K, V]):
+class BoundedTTLCache[K: Hashable, V]:
     """A small thread-safe LRU/TTL cache with immutable statistics snapshots."""
 
     def __init__(self, capacity: int, ttl_seconds: float) -> None:
@@ -119,10 +130,16 @@ class BoundedTTLCache(Generic[K, V]):
             return True, entry.value
 
     def put(
-        self, key: K, value: V, *, ttl_seconds: float | None = None,
+        self,
+        key: K,
+        value: V,
+        *,
+        ttl_seconds: float | None = None,
         negative: bool = False,
     ) -> None:
-        expires = monotonic() + (self.ttl_seconds if ttl_seconds is None else max(0.001, ttl_seconds))
+        expires = monotonic() + (
+            self.ttl_seconds if ttl_seconds is None else max(0.001, ttl_seconds)
+        )
         with self._lock:
             self._items[key] = _Entry(value, expires, negative)
             self._items.move_to_end(key)
@@ -147,8 +164,12 @@ class BoundedTTLCache(Generic[K, V]):
     def statistics(self) -> CacheStatistics:
         with self._lock:
             return CacheStatistics(
-                self._hits, self._misses, self._evictions, self._loads,
-                self._negative_hits, len(self._items),
+                self._hits,
+                self._misses,
+                self._evictions,
+                self._loads,
+                self._negative_hits,
+                len(self._items),
             )
 
     def memory_estimate_bytes(self) -> int:
@@ -166,14 +187,30 @@ class RoutingCacheManager:
     def __init__(self, configuration: CacheConfiguration | None = None) -> None:
         self.configuration = configuration or CacheConfiguration.from_environment()
         c = self.configuration
-        self.trips: BoundedTTLCache[tuple[str, str], tuple[object, ...]] = BoundedTTLCache(c.trip_capacity, c.trip_ttl_seconds)
-        self.daily_indexes: BoundedTTLCache[tuple[str, object], object] = BoundedTTLCache(c.daily_index_capacity, c.trip_ttl_seconds)
-        self.service_days: BoundedTTLCache[tuple[str, object], frozenset[str]] = BoundedTTLCache(c.daily_index_capacity, c.trip_ttl_seconds)
-        self.static_snapshots: BoundedTTLCache[str, object] = BoundedTTLCache(2, c.trip_ttl_seconds)
-        self.profiles: BoundedTTLCache[tuple[str, str, int | None, str], object] = BoundedTTLCache(c.profile_capacity, c.profile_ttl_seconds)
-        self.heuristics: BoundedTTLCache[tuple[str, str, str], float] = BoundedTTLCache(c.heuristic_capacity, c.heuristic_ttl_seconds)
-        self.responses: BoundedTTLCache[tuple[object, ...], object] = BoundedTTLCache(c.response_capacity, c.response_ttl_seconds)
-        self.warmups: BoundedTTLCache[tuple[str, str, object], bool] = BoundedTTLCache(max(4, c.daily_index_capacity * 2), c.trip_ttl_seconds)
+        self.trips: BoundedTTLCache[tuple[str, str], tuple[object, ...]] = (
+            BoundedTTLCache(c.trip_capacity, c.trip_ttl_seconds)
+        )
+        self.daily_indexes: BoundedTTLCache[tuple[str, object], object] = (
+            BoundedTTLCache(c.daily_index_capacity, c.trip_ttl_seconds)
+        )
+        self.service_days: BoundedTTLCache[tuple[str, object], frozenset[str]] = (
+            BoundedTTLCache(c.daily_index_capacity, c.trip_ttl_seconds)
+        )
+        self.static_snapshots: BoundedTTLCache[str, object] = BoundedTTLCache(
+            2, c.trip_ttl_seconds
+        )
+        self.profiles: BoundedTTLCache[tuple[str, str, int | None, str], object] = (
+            BoundedTTLCache(c.profile_capacity, c.profile_ttl_seconds)
+        )
+        self.heuristics: BoundedTTLCache[tuple[str, str, str], float] = BoundedTTLCache(
+            c.heuristic_capacity, c.heuristic_ttl_seconds
+        )
+        self.responses: BoundedTTLCache[tuple[object, ...], object] = BoundedTTLCache(
+            c.response_capacity, c.response_ttl_seconds
+        )
+        self.warmups: BoundedTTLCache[tuple[str, str, object], bool] = BoundedTTLCache(
+            max(4, c.daily_index_capacity * 2), c.trip_ttl_seconds
+        )
         self._flights: dict[tuple[str, Hashable], Event] = {}
         self._flight_lock = RLock()
         self._daily_build_ms = 0.0
@@ -195,7 +232,9 @@ class RoutingCacheManager:
         with self._flight_lock:
             return self._daily_build_ms, self._daily_entry_count
 
-    def single_flight(self, namespace: str, key: Hashable, loader: Callable[[], V]) -> V:
+    def single_flight[V](
+        self, namespace: str, key: Hashable, loader: Callable[[], V]
+    ) -> V:
         """Run one loader per key and publish only its completed return value."""
         flight_key = (namespace, key)
         while True:
@@ -225,8 +264,14 @@ class RoutingCacheManager:
 
     def clear(self) -> None:
         for cache in (
-            self.trips, self.daily_indexes, self.service_days, self.static_snapshots,
-            self.profiles, self.heuristics, self.responses, self.warmups,
+            self.trips,
+            self.daily_indexes,
+            self.service_days,
+            self.static_snapshots,
+            self.profiles,
+            self.heuristics,
+            self.responses,
+            self.warmups,
         ):
             cache.clear()
         with self._flight_lock:
@@ -237,23 +282,29 @@ class RoutingCacheManager:
 
     def invalidate_gtfs_version(self, version: str) -> int:
         """Explicitly remove one feed version; versioned lookup is safe without it."""
-        return sum((
-            self.trips.remove_where(lambda key: key[0] == version),
-            self.daily_indexes.remove_where(lambda key: key[0] == version),
-            self.service_days.remove_where(lambda key: key[0] == version),
-            self.static_snapshots.remove_where(lambda key: key == version),
-            self.heuristics.remove_where(lambda key: key[0] == version),
-            self.responses.remove_where(lambda key: bool(key) and key[0] == version),
-            self.warmups.remove_where(lambda key: key[1] == version),
-        ))
+        return sum(
+            (
+                self.trips.remove_where(lambda key: key[0] == version),
+                self.daily_indexes.remove_where(lambda key: key[0] == version),
+                self.service_days.remove_where(lambda key: key[0] == version),
+                self.static_snapshots.remove_where(lambda key: key == version),
+                self.heuristics.remove_where(lambda key: key[0] == version),
+                self.responses.remove_where(
+                    lambda key: bool(key) and key[0] == version
+                ),
+                self.warmups.remove_where(lambda key: key[1] == version),
+            )
+        )
 
     def invalidate_profile_version(self, version: str) -> int:
-        return sum((
-            self.profiles.remove_where(lambda key: key[0] == version),
-            self.responses.remove_where(
-                lambda key: len(key) > 1 and key[1] == version
-            ),
-        ))
+        return sum(
+            (
+                self.profiles.remove_where(lambda key: key[0] == version),
+                self.responses.remove_where(
+                    lambda key: len(key) > 1 and key[1] == version
+                ),
+            )
+        )
 
     def statistics(self) -> dict[str, CacheStatistics]:
         return {
@@ -268,7 +319,16 @@ class RoutingCacheManager:
         }
 
     def memory_estimate_bytes(self) -> int:
-        return sum(cache.memory_estimate_bytes() for cache in (
-            self.trips, self.daily_indexes, self.service_days, self.static_snapshots,
-            self.profiles, self.heuristics, self.responses, self.warmups,
-        ))
+        return sum(
+            cache.memory_estimate_bytes()
+            for cache in (
+                self.trips,
+                self.daily_indexes,
+                self.service_days,
+                self.static_snapshots,
+                self.profiles,
+                self.heuristics,
+                self.responses,
+                self.warmups,
+            )
+        )

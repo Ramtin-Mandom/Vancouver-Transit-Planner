@@ -91,9 +91,7 @@ class FakePlanner:
 def test_case_validation_accepts_a_different_trip_from_sample():
     case = sample_case()
     result = itinerary(trip_id="NOT-SOURCE")
-    failures = validate_itinerary(
-        FakeDatabase(case), case, at(7, 59), result
-    )
+    failures = validate_itinerary(FakeDatabase(case), case, at(7, 59), result)
     assert failures == []
 
 
@@ -148,9 +146,7 @@ def test_summary_counts_and_exit_status(capsys):
 
 def test_runner_status_uses_validation_result():
     case = sample_case()
-    _, summary = run_cases(
-        FakeDatabase(case), FakePlanner(itinerary()), limit=1
-    )
+    _, summary = run_cases(FakeDatabase(case), FakePlanner(itinerary()), limit=1)
     assert summary.passed == 1
     assert summary.failed == 0
 
@@ -158,9 +154,7 @@ def test_runner_status_uses_validation_result():
 def test_times_above_24_hours_are_preserved(capsys):
     case = sample_case(at(25, 10))
     result = itinerary(departure=at(25, 10))
-    failures = validate_itinerary(
-        FakeDatabase(case), case, at(25, 9), result
-    )
+    failures = validate_itinerary(FakeDatabase(case), case, at(25, 9), result)
     assert failures == []
     print_case_result(IntegrationResult(case, at(25, 9), result, (), 0.1))
     assert "25:10:00" in capsys.readouterr().out

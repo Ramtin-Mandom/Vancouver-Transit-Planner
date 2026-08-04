@@ -1,49 +1,41 @@
-# Vancouver Transit Planner frontend
+# Frontend
 
-This React client demonstrates the planner's core differentiator: routes are
-ranked using both scheduled travel time and historical reliability.
+React, TypeScript, Vite, and Leaflet client for the snapshot routing API.
 
 ## Local development
 
-Start FastAPI from the repository root:
-
-```powershell
-python -m uvicorn src.api.main:app --reload
-```
-
-In another terminal, install and start the frontend:
+Start the ready snapshot API from the repository root, then:
 
 ```powershell
 cd frontend
-npm install
+npm ci
+$env:VITE_API_BASE_URL="http://127.0.0.1:8000"
 npm run dev
 ```
 
-Open http://127.0.0.1:5173. The frontend defaults to the FastAPI service at
-`http://127.0.0.1:8000`.
+Open `http://127.0.0.1:5173`. The header reports connected only when `/ready`
+confirms that routing is available.
 
-To use another API URL, copy `.env.example` to `.env` and change:
-
-```dotenv
-VITE_API_BASE_URL=http://127.0.0.1:8000
-```
-
-FastAPI's existing CORS configuration permits explicit local origins on ports
-3000 and 5173. For another frontend origin, set the backend's comma-separated
-`API_CORS_ORIGINS` variable.
-
-## Validation
+## Commands
 
 ```powershell
-npm run test
+npm test
+npm run lint
+npm run format:check
 npm run build
+npm run audit:production
 ```
 
-Tests mock the API and require no PostgreSQL database or internet access. The
-production build is written to `frontend/dist/`.
+Tests mock the API and do not require PostgreSQL or internet access. The
+production build is written to `dist/`.
 
-## Current map limitation
+## Map behavior
 
-The API returns coordinates for stops but not complete route shapes. The map
-therefore shows origin, destination, and available leg endpoints without
-drawing a misleading transit path.
+The API returns ordered leg stops but not full transit shape geometry. The map
+therefore draws a separate stop-to-stop line for each alternative rather than
+claiming a street-accurate path. Colors and selection stay synchronized with
+route cards. OpenStreetMap tile failures display a fallback message, while
+missing stop coordinates omit only the unavailable geometry.
+
+See the root [development guide](../docs/development.md) for supported runtimes,
+backend setup, and release policy.

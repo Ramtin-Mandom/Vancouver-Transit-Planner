@@ -35,11 +35,7 @@ class RoutingPreferences:
 
     @property
     def normalized_weights(self) -> tuple[float, float, float]:
-        total = (
-            self.reliability_effect
-            + self.travel_time_effect
-            + self.transfer_effect
-        )
+        total = self.reliability_effect + self.travel_time_effect + self.transfer_effect
         return (
             self.reliability_effect / total,
             self.travel_time_effect / total,
@@ -69,9 +65,7 @@ def score_alternative(
     fastest_seconds = max(0.0, fastest_duration.total_seconds())
     speed = min(1.0, fastest_seconds / duration_seconds)
     transfer_component = 1.0 / (1.0 + alternative.itinerary.transfer_count)
-    reliability_weight, time_weight, transfer_weight = (
-        preferences.normalized_weights
-    )
+    reliability_weight, time_weight, transfer_weight = preferences.normalized_weights
     score = 100.0 * (
         reliability_weight * min(1.0, max(0.0, alternative.route_reliability))
         + time_weight * speed
@@ -96,12 +90,9 @@ def rank_alternatives(
     if not alternatives:
         return []
     selected_preferences = preferences or RoutingPreferences()
-    fastest = min(
-        item.itinerary.total_scheduled_travel_time for item in alternatives
-    )
+    fastest = min(item.itinerary.total_scheduled_travel_time for item in alternatives)
     scored = [
-        score_alternative(item, fastest, selected_preferences)
-        for item in alternatives
+        score_alternative(item, fastest, selected_preferences) for item in alternatives
     ]
     scored.sort(
         key=lambda item: (
