@@ -167,7 +167,7 @@ def valid_request(**overrides):
         "destination_stop_id": "31",
         "departure_time": "08:00:00",
         "algorithm": "mc_raptor",
-        "route_number": 5,
+        "route_number": 3,
         "minimum_samples": 20,
         "max_extra_minutes": 30,
         "search_timeout_seconds": 30.0,
@@ -260,6 +260,35 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
     ]
     assert body["diagnostics"] is None
     assert api_services.planner.calls[-1][0][2] == date(2026, 7, 27)
+
+
+def test_route_number_defaults_to_three_and_rejects_larger_values(
+    client, api_services
+):
+    payload = valid_request()
+    payload.pop("route_number")
+    response = client.post("/routes/plan", json=payload)
+    assert response.status_code == 200
+    assert api_services.planner.calls[-1][1]["route_number"] == 3
+    assert client.post(
+        "/routes/plan", json=valid_request(route_number=3)
+    ).status_code == 200
+    assert client.post(
+        "/routes/plan", json=valid_request(route_number=4)
+    ).status_code == 422
+    assert client.post(
+        "/routes/plan", json=valid_request(route_number=5)
+    ).status_code == 422
+
+
+def test_public_response_is_capped_at_three(client, api_services):
+    api_services.planner.alternatives = tuple(
+        alternative(f"T{number}", 8 + number, 9 + number, 100 - number)
+        for number in range(4)
+    )
+    response = client.post("/routes/plan", json=valid_request())
+    assert response.status_code == 200
+    assert len(response.json()["alternatives"]) == 3
 
 
 def test_public_route_request_rejects_user_service_date(client):

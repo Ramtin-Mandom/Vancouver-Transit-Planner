@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import heapq
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -44,8 +45,10 @@ def active_services(arrays: dict[str, np.ndarray], service_date) -> np.ndarray:
 
 def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
            departure: int, service_date, *, algorithm: str,
-           max_transfers: int = 3, search_horizon_seconds: int = 10_800
-           ) -> tuple[list[Label], int | None, SearchStats]:
+           max_transfers: int = 3, search_horizon_seconds: int = 10_800,
+           max_extra_seconds: int = 1_800, candidate_limit: int = 24,
+           timeout_seconds: float = 30.0,
+) -> tuple[list[Label], list[int], SearchStats]:
     """Run Dijkstra or zero-heuristic A* on the identical timetable state graph.
 
     A zero heuristic is deliberately used until a non-zero lower bound can be
@@ -57,11 +60,16 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     active = active_services(arrays, service_date)
     horizon = departure + search_horizon_seconds
     labels = [Label(origin, departure, 0, -1, True, -1, -1)]
-    best: dict[tuple[int, int, int, bool], int] = {(origin, -1, 0, True): departure}
+    best: dict[tuple[int, int, int, bool], int] = {
+        (origin, -1, 0, True): departure
+    }
     queue: list[tuple[int, int, int, int]] = [(departure, departure, 0, 0)]
     stats = SearchStats(pushed=1)
     sequence = 1
-    winner = None
+    winners: list[int] = []
+    winner_paths: set[tuple[int, ...]] = set()
+    fastest_arrival: int | None = None
+    deadline = perf_counter() + timeout_seconds
     departures = arrays["departure_order"]
     offsets = arrays["departure_offsets"]
 
@@ -85,15 +93,26 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         stats.pushed += 1
 
     while queue:
+        if perf_counter() >= deadline:
+            break
         _, reached, _, label_index = heapq.heappop(queue)
         stats.popped += 1
         label = labels[label_index]
         key = (label.stop, label.trip, label.transfers, label.can_alight)
         if best.get(key) != reached:
             continue
-        if label.stop == destination and label.can_alight:
-            winner = label_index
+        if fastest_arrival is not None and reached > fastest_arrival + max_extra_seconds:
             break
+        if label.stop == destination and label.can_alight:
+            path = tuple(connection_path(labels, label_index))
+            if path not in winner_paths:
+                winner_paths.add(path)
+                winners.append(label_index)
+                if fastest_arrival is None:
+                    fastest_arrival = reached
+                if len(winners) >= candidate_limit:
+                    break
+            continue
 
         # Explicit GTFS transfer edges. Type 3 is forbidden.
         for edge in np.flatnonzero(arrays["transfer_from"] == label.stop):
@@ -137,7 +156,7 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
                        int(arrays["arrival_seconds"][connection]), transfer_count,
                        trip, int(arrays["drop_off_type"][connection]) == 0,
                        label_index, connection))
-    return labels, winner, stats
+    return labels, winners, stats
 
 
 def connection_path(labels: list[Label], winner: int) -> list[int]:

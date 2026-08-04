@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import asyncio
+from dataclasses import replace
 from time import perf_counter
 from contextlib import asynccontextmanager
 
@@ -297,6 +298,9 @@ def plan_routes(
         timeout_seconds=request.search_timeout_seconds,
         include_diagnostics=request.include_diagnostics,
     )
+    # Defense in depth: the public endpoint never serializes more than three
+    # candidates, even if a custom planner ignores route_number.
+    result = replace(result, alternatives=result.alternatives[:3])
     return serialize_result(
         result,
         origin,

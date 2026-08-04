@@ -13,7 +13,6 @@ export interface PlannerValues {
   origin: Stop | null;
   destination: Stop | null;
   departureTime: string;
-  routeNumber: number;
   reliability: number;
   transferEffect: number;
   minimumSamples: number;
@@ -32,7 +31,6 @@ export const DEFAULT_PLANNER_VALUES: PlannerValues = {
   origin: null,
   destination: null,
   departureTime: "08:00:00",
-  routeNumber: 5,
   reliability: 50,
   transferEffect: 0,
   minimumSamples: 10,
@@ -74,7 +72,6 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
       origin_stop_id: values.origin.stop_id,
       destination_stop_id: values.destination.stop_id,
       departure_time: values.departureTime,
-      route_number: values.routeNumber,
       minimum_samples: values.minimumSamples,
       max_extra_minutes: values.maxExtraMinutes,
       search_timeout_seconds: values.searchTimeoutSeconds,
@@ -153,18 +150,6 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
             onChange={(event) => update("departureTime", event.target.value)}
           />
           {errors.time && <small className="fieldError">{errors.time}</small>}
-        </div>
-        <div className="fieldGroup">
-          <label htmlFor="route-number">Alternatives</label>
-          <select
-            id="route-number"
-            value={values.routeNumber}
-            onChange={(event) => update("routeNumber", Number(event.target.value))}
-          >
-            {[1, 2, 3, 4, 5].map((count) => (
-              <option value={count} key={count}>{count} route{count > 1 ? "s" : ""}</option>
-            ))}
-          </select>
         </div>
       </div>
 

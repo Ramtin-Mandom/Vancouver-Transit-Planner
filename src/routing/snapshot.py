@@ -22,7 +22,7 @@ from .models import (Itinerary, LegStop, ReliableAlternative, ReliableSearchResu
                      SearchDiagnostics, SearchDiagnosticTimings, SearchTiming, Stop)
 from .route_results import ranked_search_result
 from .snapshot_search import (connection_path, search as snapshot_search,
-                              validate_connection_path, validate_label_path)
+                              validate_label_path)
 
 FORMAT_VERSION = 2
 REQUIRED_ARRAYS = {
@@ -482,9 +482,44 @@ class SnapshotPlanner:
     def __init__(self, snapshot: RoutingSnapshot):
         self.snapshot = snapshot
 
+    @staticmethod
+    def _semantic_identity(alternative: ReliableAlternative) -> tuple:
+        """Ignore internal trip-instance IDs when the useful journey is equal."""
+        return tuple(
+            (
+                leg.route_id, leg.origin.stop_id, leg.destination.stop_id,
+                leg.departure_time, leg.arrival_time,
+            )
+            for leg in alternative.itinerary.legs
+        )
+
+    @staticmethod
+    def _pareto_survivors(
+        alternatives: list[ReliableAlternative],
+    ) -> list[ReliableAlternative]:
+        """Keep only arrival/reliability/transfer non-dominated journeys."""
+        return [
+            candidate
+            for candidate in alternatives
+            if not any(
+                other is not candidate
+                and other.itinerary.arrival_time <= candidate.itinerary.arrival_time
+                and other.reliability_cost <= candidate.reliability_cost
+                and other.itinerary.transfer_count
+                <= candidate.itinerary.transfer_count
+                and (
+                    other.itinerary.arrival_time < candidate.itinerary.arrival_time
+                    or other.reliability_cost < candidate.reliability_cost
+                    or other.itinerary.transfer_count
+                    < candidate.itinerary.transfer_count
+                )
+                for other in alternatives
+            )
+        ]
+
     def get_ranked_route_result(self, origin_stop_id: str, destination_stop_id: str,
                                 service_date: date, departure_time: timedelta, resolver=None,
-                                *, route_number=5, preferences=None, algorithm="astar",
+                                *, route_number=3, preferences=None, algorithm="astar",
                                 include_diagnostics=False, **_: Any) -> ReliableSearchResult:
         requested_algorithm = str(algorithm).strip().lower()
         if requested_algorithm == "baseline":
@@ -494,14 +529,19 @@ class SnapshotPlanner:
         started = perf_counter(); a = self.snapshot.arrays
         origin = self.snapshot.stop_index(origin_stop_id); destination = self.snapshot.stop_index(destination_stop_id)
         departure_seconds = max(0, int(departure_time.total_seconds()))
-        labels, winner, stats = snapshot_search(
+        route_limit = min(3, max(1, int(route_number)))
+        labels, winners, stats = snapshot_search(
             a, origin, destination, departure_seconds, service_date,
             algorithm=requested_algorithm,
             max_transfers=int(_.get("max_transfers", 3)),
             search_horizon_seconds=int(_.get("search_horizon_minutes", 180)) * 60,
+            max_extra_seconds=int(_.get("max_extra_minutes", 30)) * 60,
+            candidate_limit=max(8, route_limit * 4),
+            timeout_seconds=float(_.get("timeout_seconds", 30.0)),
         )
-        alternatives: tuple[ReliableAlternative, ...] = ()
-        if winner is not None:
+        materialized: list[ReliableAlternative] = []
+        identities: set[tuple] = set()
+        for winner in winners:
             path = connection_path(labels, winner)
             validate_label_path(a, labels, winner, origin, destination,
                                 departure_seconds)
@@ -529,22 +569,33 @@ class SnapshotPlanner:
                 probability *= float(selection.profile.reliability_probability) if selection.profile else 0.5
             itinerary=Itinerary(self.snapshot.stop(origin), self.snapshot.stop(destination), service_date,
                                 departure_time, timedelta(seconds=labels[winner].arrival), tuple(legs))
-            alternatives=(ReliableAlternative(itinerary, probability, -math.log(max(probability,1e-9)), tuple(selections)),)
+            alternative = ReliableAlternative(
+                itinerary, probability, -math.log(max(probability,1e-9)),
+                tuple(selections))
+            identity = self._semantic_identity(alternative)
+            if identity in identities:
+                continue
+            identities.add(identity)
+            materialized.append(alternative)
+        alternatives = tuple(self._pareto_survivors(materialized))
         search_ms=(perf_counter()-started)*1000
         diagnostics = SearchDiagnostics(SearchDiagnosticTimings(measured_search_ms=search_ms),
             SearchDiagnosticCounters(
                 algorithm=requested_algorithm, requested_algorithm=str(algorithm),
                 executed_algorithm=requested_algorithm, states_pushed=stats.pushed,
                 states_popped=stats.popped, states_reopened=stats.reopened,
+                labels_created=stats.pushed,
                 transfer_edges_examined=stats.transfers,
                 heuristic_evaluations=stats.heuristics,
                 zero_heuristic_fallbacks=stats.zero_fallbacks,
-                final_arrival_cost=(labels[winner].arrival if winner is not None else 0),
+                final_arrival_cost=(labels[winners[0]].arrival if winners else 0),
                 connections_examined=stats.connections,
+                destination_labels_found=len(winners),
+                candidate_itineraries=len(materialized),
                 alternatives_reconstructed=len(alternatives)),
             SearchCacheStatistics(unexpected_queries_during_search=0)) if include_diagnostics else None
         result=ReliableSearchResult(alternatives, SearchTiming(0,search_ms,0,search_ms),0,diagnostics)
-        return ranked_search_result(result, route_number=route_number, preferences=preferences)
+        return ranked_search_result(result, route_number=route_limit, preferences=preferences)
 
     def _profile(self, route: int, direction: int | None, window: str, minimum_samples: int) -> ProfileSelection:
         a=self.snapshot.arrays; names=("overnight","morning_peak","midday","afternoon_peak","evening")

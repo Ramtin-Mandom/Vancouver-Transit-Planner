@@ -241,7 +241,7 @@ class RoutePlanRequest(ApiModel):
     departure_time: str
     algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
     cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE
-    route_number: int = Field(default=5, ge=1, le=5)
+    route_number: int = Field(default=3, ge=1, le=3)
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)
     search_timeout_seconds: float = Field(default=30.0, gt=0, le=120)
