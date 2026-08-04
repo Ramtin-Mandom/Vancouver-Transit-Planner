@@ -124,6 +124,7 @@ Download and import the current feed, then build a snapshot:
 
 ```powershell
 python -m scripts.download_gtfs
+python -m src.data_ingestion.cleaner
 psql -h localhost -U transit -d vancouver_transit -f database/schema.sql
 python -m src.data_ingestion.cli --replace
 python -m scripts.build_routing_snapshot --output data/routing_snapshot

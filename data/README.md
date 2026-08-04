@@ -5,6 +5,7 @@ inputs or artifacts and are not stored in Git. Download the current static feed:
 
 ```powershell
 python -m scripts.download_gtfs
+python -m src.data_ingestion.cleaner
 python -m src.data_ingestion.cli --dry-run
 python -m src.data_ingestion.cli --replace
 python -m scripts.build_routing_snapshot --output data/routing_snapshot

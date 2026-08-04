@@ -29,6 +29,7 @@ No item in this checklist authorizes a tag, push, deployment, or GitHub release.
 ## Feed and snapshot
 
 - [ ] Download and dry-run the current static GTFS feed.
+- [ ] Run the extracted-feed cleaner and review every orphan-removal reason.
 - [ ] Confirm data attribution and current TransLink terms.
 - [ ] Import the intended feed and aggregate current reliability data.
 - [ ] Build and validate a format-3 snapshot.

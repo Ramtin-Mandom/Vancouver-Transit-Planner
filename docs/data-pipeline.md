@@ -36,6 +36,17 @@ Download the current published archive:
 python -m scripts.download_gtfs --force
 ```
 
+Audit referential integrity and remove orphaned rows from optional TransLink
+extension tables in the generated extract:
+
+```powershell
+python -m src.data_ingestion.cleaner
+```
+
+The cleaner preserves database constraints and core GTFS records. It reports
+every removed row and reason, and only rewrites the generated extracted files.
+Use `--dry-run` to inspect the report without modifying them.
+
 Validate without a database write:
 
 ```powershell
@@ -95,11 +106,12 @@ of “no routes.”
 Refresh procedure:
 
 1. Download the new feed.
-2. Dry-run validation.
-3. Import with the intended replacement database.
-4. Recompute reliability profiles when current observations are available.
-5. Rebuild and validate the snapshot.
-6. Run backend tests and one real route request within the new service range.
-7. Deploy only through `main` after explicit authorization.
+2. Clean orphaned optional extension rows and review the report.
+3. Dry-run validation.
+4. Import with the intended replacement database.
+5. Recompute reliability profiles when current observations are available.
+6. Rebuild and validate the snapshot.
+7. Run backend tests and one real route request within the new service range.
+8. Deploy only through `main` after explicit authorization.
 
 See [data attribution](../data/README.md).
