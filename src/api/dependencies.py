@@ -7,11 +7,15 @@ from typing import Any
 
 from fastapi import Request
 
+import os
+from pathlib import Path
+
 from src.reliability.database import ReliabilityDatabase
 from src.routing.database import TransitDatabase
 from src.routing.planner import TransitPlanner
 from src.routing.cache import RoutingCacheManager
 from src.routing.warmup import RoutingWarmupCoordinator
+from src.routing.snapshot import RoutingSnapshot, SnapshotError, SnapshotPlanner
 
 
 @dataclass
@@ -21,12 +25,17 @@ class ApiServices:
     reliability_database: Any
     cache_manager: RoutingCacheManager | None = None
     warmup: RoutingWarmupCoordinator | None = None
+    snapshot: RoutingSnapshot | None = None
 
     def close(self) -> None:
         try:
-            self.reliability_database.close()
+            close = getattr(self.reliability_database, "close", None)
+            if close:
+                close()
         finally:
-            self.transit_database.close()
+            close = getattr(self.transit_database, "close", None)
+            if close:
+                close()
 
 
 class ServicesUnavailable(RuntimeError):
@@ -34,6 +43,18 @@ class ServicesUnavailable(RuntimeError):
 
 
 def create_services() -> ApiServices:
+    snapshot_path = os.getenv("ROUTING_SNAPSHOT_PATH", "data/routing_snapshot")
+    required = os.getenv("ROUTING_SNAPSHOT_REQUIRED", "true").lower() in {"1", "true", "yes", "on"}
+    development_fallback = os.getenv("ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK", "false").lower() in {"1", "true", "yes", "on"}
+    try:
+        snapshot = RoutingSnapshot(Path(snapshot_path))
+        # Reliability profiles are part of the artifact in future formats. A
+        # null resolver keeps current response semantics without opening SQL.
+        return ApiServices(snapshot, SnapshotPlanner(snapshot), None, snapshot=snapshot)
+    except SnapshotError:
+        if required or not development_fallback:
+            raise
+        # Explicitly opted-in local compatibility path only.
     transit_database = TransitDatabase()
     try:
         transit_database.initialize()

@@ -4,6 +4,42 @@ A transit planner that imports TransLink GTFS data into PostgreSQL, finds
 scheduled journeys, collects GTFS-Realtime delay observations, and can rank
 route alternatives using historical delay and transfer reliability.
 
+## Production routing snapshot
+
+FastAPI's production default does not query PostgreSQL. Build the artifact
+after each GTFS/reliability refresh, outside the web process:
+
+```powershell
+python -m scripts.build_routing_snapshot --output data/routing_snapshot
+python -m scripts.validate_routing_snapshot data/routing_snapshot
+python -m scripts.benchmark_snapshot data/routing_snapshot --origin STOP_ID --destination STOP_ID
+```
+
+Set `ROUTING_SNAPSHOT_PATH` to the artifact directory and
+`ROUTING_SNAPSHOT_REQUIRED=true`, then run exactly one production worker:
+
+```powershell
+$env:ROUTING_SNAPSHOT_PATH='data/routing_snapshot'
+uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --workers 1
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+curl 'http://localhost:8000/stops/search?query=Gran&limit=10'
+```
+
+The generated directory is intentionally gitignored. Supply it to Render as a
+private build artifact or persistent-disk directory, and rebuild/redeploy it
+after GTFS changes. `ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK=true` explicitly
+enables the legacy database/cache path for local debugging; it is disabled by
+default and must not be used in production. “Load once” means one prebuilt
+snapshot is loaded by the backend process; React still calls FastAPI for stop
+autocomplete and planning. `/health` only proves liveness; `/ready` reports
+snapshot format, source version, counts, or a concise loading failure.
+
+In snapshot mode, the production array-native earliest-arrival scan is used for
+all accepted API algorithm selector values. The legacy experimental A*,
+Dijkstra, and MC-RAPTOR implementations remain available only through the
+explicit development fallback because they retain Python `Connection` graphs.
+
 ## PostgreSQL data ingestion
 
 The project requires Python 3.10+, PostgreSQL, `psycopg` 3, and
