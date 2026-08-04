@@ -35,8 +35,7 @@ historical delay observations into ranked transit routes for Metro Vancouver.
 
 ![Vancouver Transit Planner showing the trip form, reliability controls, and map](docs/assets/application.png)
 
-There is no public demo URL in the repository. Production deployment is defined
-for Render, but URLs and secrets are intentionally supplied by the operator.
+Public demo: https://vancouver-transit-planner.onrender.com/
 
 ## Why this project
 
