@@ -36,6 +36,10 @@ class SearchStats:
     maximum_speed_mps: float | None = None
     heuristic_fallback_reason: str | None = None
     timed_out: bool = False
+    resource_limit_reached: bool = False
+    termination_reason: str | None = None
+    candidate_truncated: bool = False
+    candidate_collection_complete: bool = False
 
 
 EARTH_RADIUS_METERS = 6_371_008.8
@@ -66,7 +70,8 @@ def active_services(arrays: dict[str, np.ndarray], service_date) -> np.ndarray:
 def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
            departure: int, service_date, *, algorithm: str,
            max_transfers: int = 3, search_horizon_seconds: int = 10_800,
-           max_extra_seconds: int = 1_800, candidate_limit: int = 24,
+           max_extra_seconds: int = 1_800, candidate_limit: int = 10_000,
+           max_labels: int = 250_000,
            timeout_seconds: float = 30.0, collect_alternatives: bool = True,
            heuristic_metadata: dict[str, Any] | None = None,
            clock=None,
@@ -76,6 +81,8 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         raise ValueError("snapshot routing algorithm must be 'dijkstra' or 'astar'")
     if timeout_seconds <= 0:
         raise ValueError("search timeout must be positive")
+    if max_labels < 1 or candidate_limit < 1:
+        raise ValueError("label and candidate limits must be positive")
     clock = clock or perf_counter
     active = active_services(arrays, service_date)
     horizon = departure + search_horizon_seconds
@@ -154,6 +161,10 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
             return
         if prior is not None:
             stats.reopened += 1
+        if len(labels) >= max_labels:
+            stats.resource_limit_reached = True
+            stats.termination_reason = "maximum_labels"
+            return
         best[key] = label.arrival
         labels.append(label)
         index = len(labels) - 1
@@ -167,6 +178,7 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     while queue:
         if clock() >= deadline:
             stats.timed_out = True
+            stats.termination_reason = "deadline"
             break
         _, reached, _, label_index = heapq.heappop(queue)
         stats.popped += 1
@@ -175,6 +187,8 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         if best.get(key) != reached:
             continue
         if fastest_arrival is not None and reached > fastest_arrival + max_extra_seconds:
+            stats.candidate_collection_complete = True
+            stats.termination_reason = "candidate_window_complete"
             break
         if label.stop == destination and label.can_alight:
             path = tuple(connection_path(labels, label_index))
@@ -184,8 +198,13 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
                 if fastest_arrival is None:
                     fastest_arrival = reached
                 if not collect_alternatives:
+                    stats.candidate_collection_complete = True
+                    stats.termination_reason = "best_destination_reached"
                     break
                 if len(winners) >= candidate_limit:
+                    stats.resource_limit_reached = True
+                    stats.candidate_truncated = True
+                    stats.termination_reason = "maximum_candidates"
                     break
             continue
 
@@ -204,6 +223,10 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
             push(Label(int(arrays["transfer_to"][edge]),
                        reached + int(arrays["transfer_seconds"][edge]),
                        label.transfers, label.trip, True, label_index, -2 - int(edge)))
+            if stats.resource_limit_reached:
+                break
+        if stats.resource_limit_reached:
+            break
 
         start, end = int(offsets[label.stop]), int(offsets[label.stop + 1])
         for position in range(start, end):
@@ -246,6 +269,13 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
                        int(arrays["arrival_seconds"][connection]), transfer_count,
                        trip, int(arrays["drop_off_type"][connection]) == 0,
                        label_index, connection))
+            if stats.resource_limit_reached:
+                break
+        if stats.resource_limit_reached:
+            break
+    if not queue and not stats.timed_out and not stats.resource_limit_reached:
+        stats.candidate_collection_complete = True
+        stats.termination_reason = stats.termination_reason or "queue_exhausted"
     return labels, winners, stats
 
 

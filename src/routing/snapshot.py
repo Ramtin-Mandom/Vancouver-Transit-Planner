@@ -701,8 +701,9 @@ class SnapshotPlanner:
             max_transfers=int(_.get("max_transfers", 3)),
             search_horizon_seconds=int(_.get("search_horizon_minutes", 180)) * 60,
             max_extra_seconds=int(_.get("max_extra_minutes", 30)) * 60,
-            candidate_limit=(max(8, route_limit * 4)
+            candidate_limit=(int(_.get("max_candidates", 10_000))
                              if include_alternatives else 1),
+            max_labels=int(_.get("max_labels", 250_000)),
             timeout_seconds=float(_.get("timeout_seconds", 30.0)),
             collect_alternatives=include_alternatives,
             heuristic_metadata=self.snapshot.heuristic_metadata,
@@ -712,6 +713,13 @@ class SnapshotPlanner:
             raise ReliableSearchTimeout(
                 f"snapshot search exceeded {float(_.get('timeout_seconds', 30.0)):g} seconds",
                 log_context={"algorithm": requested_algorithm, "timed_out": True},
+            )
+        if stats.resource_limit_reached:
+            raise ReliableSearchTimeout(
+                f"snapshot search reached resource limit: {stats.termination_reason}",
+                log_context={"algorithm": requested_algorithm,
+                             "resource_limit": stats.termination_reason,
+                             "candidate_truncated": stats.candidate_truncated},
             )
         materialized: list[ReliableAlternative] = []
         identities: set[tuple] = set()
@@ -771,7 +779,11 @@ class SnapshotPlanner:
                 connections_examined=stats.connections,
                 destination_labels_found=len(winners),
                 candidate_itineraries=len(materialized),
-                alternatives_reconstructed=len(alternatives)),
+                alternatives_reconstructed=len(alternatives),
+                candidate_truncated=stats.candidate_truncated,
+                candidate_collection_complete=stats.candidate_collection_complete,
+                resource_limit_reached=stats.resource_limit_reached,
+                termination_reason=stats.termination_reason),
             SearchCacheStatistics(unexpected_queries_during_search=0)) if include_diagnostics else None
         result=ReliableSearchResult(alternatives, SearchTiming(0,search_ms,0,search_ms),0,diagnostics)
         return ranked_search_result(result, route_number=route_limit, preferences=preferences)

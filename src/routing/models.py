@@ -199,6 +199,10 @@ class SearchDiagnosticCounters:
     marked_stops_per_round: tuple[int, ...] = ()
     transfer_edges_relaxed: int = 0
     candidate_itineraries: int = 0
+    candidate_truncated: bool = False
+    candidate_collection_complete: bool = False
+    resource_limit_reached: bool = False
+    termination_reason: str | None = None
 
 
 @dataclass(frozen=True)

@@ -502,6 +502,46 @@ def test_single_route_mode_stops_at_first_destination_and_does_less_work(tmp_pat
         loaded.close()
 
 
+@pytest.mark.parametrize(
+    "limits,reason",
+    [({"max_labels": 1}, "maximum_labels"),
+     ({"max_candidates": 1, "include_alternatives": True},
+      "maximum_candidates")],
+)
+def test_snapshot_resource_guards_raise_instead_of_returning_partial_results(
+    tmp_path, limits, reason
+):
+    from src.routing.reliable import ReliableSearchTimeout
+
+    loaded = _direct_alternative_snapshot(tmp_path, 4)
+    try:
+        with pytest.raises(ReliableSearchTimeout) as caught:
+            SnapshotPlanner(loaded).get_ranked_route_result(
+                "A", "C", date(2026, 8, 3), timedelta(hours=8),
+                algorithm="dijkstra", **limits,
+            )
+        assert caught.value.log_context["resource_limit"] == reason
+    finally:
+        loaded.close()
+
+
+def test_alternative_diagnostics_report_complete_untruncated_collection(tmp_path):
+    loaded = _direct_alternative_snapshot(tmp_path, 4)
+    try:
+        result = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="dijkstra", include_alternatives=True,
+            include_diagnostics=True,
+        )
+        counters = result.diagnostics.counters
+        assert counters.candidate_collection_complete
+        assert not counters.candidate_truncated
+        assert counters.termination_reason in {
+            "candidate_window_complete", "queue_exhausted"}
+    finally:
+        loaded.close()
+
+
 def test_pickup_dropoff_transfer_and_maximum_transfer(tmp_path):
     stops = [
         {"stop_id": "A", "stop_name": "A", "parent_station": None},
