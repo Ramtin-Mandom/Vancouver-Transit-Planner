@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -43,8 +44,64 @@ def _rss_bytes() -> int | None:
         import resource
         value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         return int(value if os.name == "nt" else value * 1024)
-    except Exception:  # pragma: no cover - platform dependent
+    except Exception:
+        try:  # Windows peak working set, without adding a runtime dependency.
+            import ctypes
+            from ctypes import wintypes
+
+            class Counters(ctypes.Structure):
+                _fields_ = [
+                    ("cb", wintypes.DWORD),
+                    ("PageFaultCount", wintypes.DWORD),
+                    ("PeakWorkingSetSize", ctypes.c_size_t),
+                    ("WorkingSetSize", ctypes.c_size_t),
+                    ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                    ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                    ("PagefileUsage", ctypes.c_size_t),
+                    ("PeakPagefileUsage", ctypes.c_size_t),
+                ]
+
+            counters = Counters()
+            counters.cb = ctypes.sizeof(counters)
+            get_process = ctypes.windll.kernel32.GetCurrentProcess
+            get_process.restype = wintypes.HANDLE
+            get_memory = ctypes.windll.psapi.GetProcessMemoryInfo
+            get_memory.argtypes = (
+                wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD
+            )
+            get_memory.restype = wintypes.BOOL
+            handle = get_process()
+            if get_memory(
+                handle, ctypes.byref(counters), counters.cb
+            ):
+                return int(counters.PeakWorkingSetSize)
+        except Exception:  # pragma: no cover - platform dependent
+            pass
         return None
+
+
+def _check_peak_rss(limit_bytes: int | None) -> int | None:
+    peak = _rss_bytes()
+    if limit_bytes is not None and peak is not None and peak > limit_bytes:
+        raise SnapshotError(
+            f"snapshot build peak RSS {peak} bytes exceeded limit {limit_bytes} bytes"
+        )
+    return peak
+
+
+def _open_array(directory: Path, name: str, dtype: np.dtype | str, length: int):
+    return np.lib.format.open_memmap(
+        directory / f"{name}.npy", mode="w+", dtype=dtype, shape=(length,)
+    )
+
+
+def _close_mmaps(arrays: Mapping[str, np.ndarray]) -> None:
+    for array in arrays.values():
+        mmap = getattr(array, "_mmap", None)
+        if mmap is not None:
+            mmap.close()
 
 
 def _small_unsigned(maximum: int) -> np.dtype:
@@ -63,8 +120,9 @@ def build_snapshot_from_rows(
     calendars: Iterable[Mapping[str, Any]] = (),
     calendar_dates: Iterable[Mapping[str, Any]] = (),
     reliability_profiles: Iterable[Mapping[str, Any]] = (),
+    max_peak_rss_bytes: int | None = None,
 ) -> dict[str, Any]:
-    """Build an atomic snapshot from streaming-compatible row iterables."""
+    """Build atomically using a bounded-memory, disk-backed two-pass flow."""
     started = perf_counter()
     output = Path(output)
     temporary = output.with_name(f".{output.name}.tmp-{os.getpid()}")
@@ -75,40 +133,52 @@ def build_snapshot_from_rows(
     if len(stop_map) != len(stop_ids):
         raise SnapshotError("duplicate stop_id in snapshot input")
 
-    dictionaries = {name: {} for name in ("trip", "route", "service")}
+    dictionaries: dict[str, dict[str, int]] = {
+        name: {} for name in ("trip", "route", "service")
+    }
     route_names: list[str] = []
-    columns: dict[str, list[Any]] = {name: [] for name in (
-        "from_stop", "to_stop", "departure_seconds", "arrival_seconds",
-        "trip_index", "route_index", "service_index", "stop_sequence", "direction_id",
-    )}
+    spool = temporary / "connections.jsonl"
+    count = 0
+    arrays: dict[str, np.ndarray] = {}
     try:
-        for row in connections:
-            for key in ("from_stop_id", "to_stop_id", "trip_id", "route_id",
-                        "service_id", "departure_seconds", "arrival_seconds"):
-                if row.get(key) is None:
-                    raise SnapshotError(f"connection missing required field {key}")
-            departure, arrival = int(row["departure_seconds"]), int(row["arrival_seconds"])
-            if departure < 0 or arrival < departure:
-                raise SnapshotError("invalid connection time ordering")
-            try:
-                columns["from_stop"].append(stop_map[str(row["from_stop_id"])])
-                columns["to_stop"].append(stop_map[str(row["to_stop_id"])])
-            except KeyError as exc:
-                raise SnapshotError(f"connection references unknown stop {exc.args[0]}") from exc
-            for kind in ("trip", "route", "service"):
-                value = str(row[f"{kind}_id"])
-                index = dictionaries[kind].setdefault(value, len(dictionaries[kind]))
-                columns[f"{kind}_index"].append(index)
-                if kind == "route" and index == len(route_names):
-                    route_names.append(str(row.get("route_name") or value))
-            columns["departure_seconds"].append(departure)
-            columns["arrival_seconds"].append(arrival)
-            columns["stop_sequence"].append(int(row.get("stop_sequence", 0)))
-            columns["direction_id"].append(-1 if row.get("direction_id") is None else int(row["direction_id"]))
+        with spool.open("w", encoding="utf-8", newline="\n") as spool_file:
+            for row in connections:
+                for key in ("from_stop_id", "to_stop_id", "trip_id", "route_id",
+                            "service_id", "departure_seconds", "arrival_seconds"):
+                    if row.get(key) is None:
+                        raise SnapshotError(f"connection missing required field {key}")
+                departure = int(row["departure_seconds"])
+                arrival = int(row["arrival_seconds"])
+                if departure < 0 or arrival < departure:
+                    raise SnapshotError("invalid connection time ordering")
+                try:
+                    from_stop = stop_map[str(row["from_stop_id"])]
+                    to_stop = stop_map[str(row["to_stop_id"])]
+                except KeyError as exc:
+                    raise SnapshotError(
+                        f"connection references unknown stop {exc.args[0]}"
+                    ) from exc
+                indexes = []
+                for kind in ("trip", "route", "service"):
+                    value = str(row[f"{kind}_id"])
+                    index = dictionaries[kind].setdefault(
+                        value, len(dictionaries[kind])
+                    )
+                    indexes.append(index)
+                    if kind == "route" and index == len(route_names):
+                        route_names.append(str(row.get("route_name") or value))
+                normalized = (
+                    from_stop, to_stop, departure, arrival, *indexes,
+                    int(row.get("stop_sequence", 0)),
+                    -1 if row.get("direction_id") is None else int(row["direction_id"]),
+                )
+                spool_file.write(json.dumps(normalized, separators=(",", ":")) + "\n")
+                count += 1
+                if count % 100_000 == 0:
+                    _check_peak_rss(max_peak_rss_bytes)
 
-        count = len(columns["from_stop"])
         stop_dtype = _small_unsigned(max(0, len(stop_ids) - 1))
-        arrays: dict[str, np.ndarray] = {
+        arrays = {
             "stop_ids": _strings(stop_ids),
             "stop_names": _strings(row["stop_name"] for row in stop_rows),
             "stop_codes": _strings(row.get("stop_code") for row in stop_rows),
@@ -118,16 +188,29 @@ def build_snapshot_from_rows(
             "route_ids": _strings(dictionaries["route"].keys()),
             "route_names": _strings(route_names),
             "service_ids": _strings(dictionaries["service"].keys()),
-            "from_stop": np.asarray(columns["from_stop"], dtype=stop_dtype),
-            "to_stop": np.asarray(columns["to_stop"], dtype=stop_dtype),
-            "departure_seconds": np.asarray(columns["departure_seconds"], dtype="uint32"),
-            "arrival_seconds": np.asarray(columns["arrival_seconds"], dtype="uint32"),
-            "trip_index": np.asarray(columns["trip_index"], dtype=_small_unsigned(max(0, len(dictionaries["trip"])-1))),
-            "route_index": np.asarray(columns["route_index"], dtype=_small_unsigned(max(0, len(dictionaries["route"])-1))),
-            "service_index": np.asarray(columns["service_index"], dtype=_small_unsigned(max(0, len(dictionaries["service"])-1))),
-            "stop_sequence": np.asarray(columns["stop_sequence"], dtype="uint16"),
-            "direction_id": np.asarray(columns["direction_id"], dtype="int8"),
         }
+        connection_specs = {
+            "from_stop": stop_dtype,
+            "to_stop": stop_dtype,
+            "departure_seconds": np.dtype("uint32"),
+            "arrival_seconds": np.dtype("uint32"),
+            "trip_index": _small_unsigned(max(0, len(dictionaries["trip"]) - 1)),
+            "route_index": _small_unsigned(max(0, len(dictionaries["route"]) - 1)),
+            "service_index": _small_unsigned(max(0, len(dictionaries["service"]) - 1)),
+            "stop_sequence": np.dtype("uint16"),
+            "direction_id": np.dtype("int8"),
+        }
+        for name, dtype in connection_specs.items():
+            arrays[name] = _open_array(temporary, name, dtype, count)
+        with spool.open("r", encoding="utf-8") as spool_file:
+            for position, line in enumerate(spool_file):
+                values = json.loads(line)
+                for column, value in zip(connection_specs, values):
+                    arrays[column][position] = value
+        spool.unlink()
+        for name in connection_specs:
+            arrays[name].flush()
+        _check_peak_rss(max_peak_rss_bytes)
         calendar_by_service = {str(row["service_id"]): row for row in calendars}
         starts=[]; ends=[]; masks=[]
         for service_id in dictionaries["service"]:
@@ -158,12 +241,21 @@ def build_snapshot_from_rows(
         arrays["profile_probability"]=np.asarray([p[3] for p in profiles],dtype="float32")
         arrays["profile_samples"]=np.asarray([p[4] for p in profiles],dtype="uint32")
         index_dtype = np.dtype("uint32" if count <= np.iinfo(np.uint32).max else "uint64")
-        arrays["scan_order"] = np.argsort(arrays["departure_seconds"], kind="stable").astype(index_dtype)
-        arrays["departure_order"] = np.lexsort((arrays["departure_seconds"], arrays["from_stop"])).astype(index_dtype)
+        arrays["scan_order"] = np.argsort(
+            arrays["departure_seconds"], kind="stable"
+        ).astype(index_dtype, copy=False)
+        _check_peak_rss(max_peak_rss_bytes)
+        arrays["departure_order"] = np.lexsort(
+            (arrays["departure_seconds"], arrays["from_stop"])
+        ).astype(index_dtype, copy=False)
         counts_by_stop = np.bincount(arrays["from_stop"].astype(np.int64), minlength=len(stop_ids))
         arrays["departure_offsets"] = np.concatenate(([0], np.cumsum(counts_by_stop))).astype(index_dtype)
         for name, array in arrays.items():
-            np.save(temporary / f"{name}.npy", array, allow_pickle=False)
+            path = temporary / f"{name}.npy"
+            if not path.exists():
+                np.save(path, array, allow_pickle=False)
+        peak_rss = _check_peak_rss(max_peak_rss_bytes)
+        array_size = sum(path.stat().st_size for path in temporary.glob("*.npy"))
         manifest = {
             "format_version": FORMAT_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -172,8 +264,15 @@ def build_snapshot_from_rows(
             "counts": {"stops": len(stop_ids), "routes": len(dictionaries["route"]),
                        "trips": len(dictionaries["trip"]), "connections": count},
             "arrays": {name: {"shape": list(array.shape), "dtype": str(array.dtype)} for name, array in arrays.items()},
+            "build": {
+                "duration_seconds": perf_counter() - started,
+                "size_bytes": array_size,
+                "peak_rss_bytes": peak_rss,
+            },
         }
         (temporary / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        # Windows cannot rename a directory containing open mmap handles.
+        _close_mmaps(arrays)
         backup = output.with_name(f".{output.name}.old-{os.getpid()}")
         if output.exists():
             os.replace(output, backup)
@@ -184,14 +283,12 @@ def build_snapshot_from_rows(
                 os.replace(backup, output)
             raise
         if backup.exists():
-            import shutil
             shutil.rmtree(backup)
         size = sum(path.stat().st_size for path in output.iterdir())
-        manifest["build"] = {"duration_seconds": perf_counter() - started,
-                             "size_bytes": size, "peak_rss_bytes": _rss_bytes()}
+        manifest["build"]["size_bytes"] = size
         return manifest
     except Exception:
-        import shutil
+        _close_mmaps(arrays)
         shutil.rmtree(temporary, ignore_errors=True)
         raise
 

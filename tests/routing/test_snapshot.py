@@ -7,6 +7,7 @@ np = pytest.importorskip("numpy")
 
 from src.routing.snapshot import (RoutingSnapshot, SnapshotError, SnapshotPlanner,
                                   build_snapshot_from_rows)
+import src.routing.snapshot as snapshot_module
 
 
 STOPS = [
@@ -55,3 +56,45 @@ def test_incompatible_and_corrupt_snapshots(tmp_path):
 def test_compact_fixture_has_no_connection_objects(snapshot):
     assert sum(array.nbytes for array in snapshot.arrays.values()) < 10_000
     assert not hasattr(snapshot, "connections")
+
+
+def test_generation_is_streamed_and_removes_spool(tmp_path):
+    produced = 0
+
+    def rows():
+        nonlocal produced
+        for index in range(5_000):
+            produced += 1
+            yield {
+                **CONNECTIONS[index % 2],
+                "trip_id": f"T{index}",
+                "departure_seconds": 28_800 + index,
+                "arrival_seconds": 28_801 + index,
+            }
+
+    path = tmp_path / "snapshot"
+    build_snapshot_from_rows(path, stops=STOPS, connections=rows())
+    assert produced == 5_000
+    assert not list(tmp_path.glob(".snapshot.tmp-*"))
+    assert not list(path.glob("*.jsonl"))
+
+
+def test_failed_build_cleans_temporary_files_and_preserves_existing(tmp_path):
+    path = tmp_path / "snapshot"
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
+    original = (path / "manifest.json").read_bytes()
+    bad = [dict(CONNECTIONS[0], arrival_seconds=1)]
+    with pytest.raises(SnapshotError, match="time ordering"):
+        build_snapshot_from_rows(path, stops=STOPS, connections=bad)
+    assert (path / "manifest.json").read_bytes() == original
+    assert not list(tmp_path.glob(".snapshot.tmp-*"))
+
+
+def test_build_fails_when_peak_rss_exceeds_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(snapshot_module, "_rss_bytes", lambda: 20_000)
+    with pytest.raises(SnapshotError, match="exceeded limit"):
+        build_snapshot_from_rows(
+            tmp_path / "snapshot", stops=STOPS, connections=CONNECTIONS,
+            max_peak_rss_bytes=10_000,
+        )
+    assert not list(tmp_path.glob(".snapshot.tmp-*"))
