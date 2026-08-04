@@ -118,9 +118,19 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         if cached is not None:
             stats.heuristic_cache_hits += 1
             return cached
-        value = max(0, math.floor(haversine_meters(
-            float(arrays["stop_lat"][stop]), float(arrays["stop_lon"][stop]),
-            destination_lat, destination_lon) / speed))
+        try:
+            latitude = float(arrays["stop_lat"][stop])
+            longitude = float(arrays["stop_lon"][stop])
+            if (not math.isfinite(latitude) or not math.isfinite(longitude)
+                    or not -90 <= latitude <= 90
+                    or not -180 <= longitude <= 180):
+                raise ValueError
+            value = max(0, math.floor(haversine_meters(
+                latitude, longitude, destination_lat, destination_lon) / speed))
+        except (IndexError, TypeError, ValueError, OverflowError):
+            # Metadata validation normally prevents this. Keep a request safe
+            # if a legacy or externally modified artifact contains bad data.
+            value = 0
         heuristic_cache[stop] = value
         stats.heuristics += 1
         return value

@@ -4,6 +4,9 @@ from datetime import date, timedelta
 import random
 
 from src.routing.snapshot import RoutingSnapshot, SnapshotPlanner, build_snapshot_from_rows
+from src.routing.snapshot_search import (
+    connection_path, search, validate_connection_path, validate_label_path,
+)
 
 
 SEED = 20260803
@@ -55,5 +58,24 @@ def test_seeded_fifo_astar_dijkstra_differential(tmp_path):
             if dijkstra.alternatives:
                 assert (dijkstra.alternatives[0].itinerary.arrival_time
                         == astar.alternatives[0].itinerary.arrival_time)
+            origin = snapshot.stop_index(f"S{source}")
+            destination = snapshot.stop_index(f"S{target}")
+            departure = int(requested.total_seconds())
+            for algorithm in ("dijkstra", "astar"):
+                labels, winners, stats = search(
+                    snapshot.arrays, origin, destination, departure,
+                    date(2026, 8, 3), algorithm=algorithm,
+                    collect_alternatives=False,
+                    heuristic_metadata=snapshot.heuristic_metadata,
+                )
+                assert not stats.timed_out
+                if winners:
+                    winner = winners[0]
+                    validate_label_path(snapshot.arrays, labels, winner,
+                                        origin, destination, departure)
+                    validate_connection_path(
+                        snapshot.arrays, connection_path(labels, winner),
+                        origin, destination, departure, labels[winner].arrival,
+                    )
     finally:
         snapshot.close()

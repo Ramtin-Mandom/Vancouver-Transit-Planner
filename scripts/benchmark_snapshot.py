@@ -21,6 +21,6 @@ if args.origin and args.destination:
    samples=[]; counters=None
    for _ in range(args.iterations):
     started=time.perf_counter(); routed=planner.get_ranked_route_result(args.origin,args.destination,date.today(),timedelta(seconds=args.departure_seconds),algorithm=algorithm,include_alternatives=alternatives,include_diagnostics=True,timeout_seconds=args.timeout_seconds); samples.append((time.perf_counter()-started)*1000); counters=routed.diagnostics.counters
-   runs[f"{algorithm}_{'alternatives' if alternatives else 'single'}"]={"median_total_ms":statistics.median(samples),"median_search_ms":statistics.median(samples),"labels_pushed":counters.states_pushed,"labels_popped":counters.states_popped,"connections_examined":counters.connections_examined,"transfer_records_examined":counters.transfer_edges_examined,"heuristic_enabled":counters.geographic_heuristic_enabled}
+   runs[f"{algorithm}_{'alternatives' if alternatives else 'single'}"]={"median_total_ms":statistics.median(samples),"median_search_ms":statistics.median(samples),"labels_pushed":counters.states_pushed,"labels_popped":counters.states_popped,"connections_examined":counters.connections_examined,"transfer_records_examined":counters.transfer_edges_examined,"heuristic_enabled":counters.geographic_heuristic_enabled,"heuristic_values_computed":counters.heuristic_evaluations,"heuristic_cache_hits":counters.heuristic_cache_hits}
  result["runs"]=runs
 print(json.dumps(result,indent=2))
