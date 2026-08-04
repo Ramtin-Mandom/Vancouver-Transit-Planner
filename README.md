@@ -1,3 +1,33 @@
+# Author Notes
+
+This was a project that I started because the topic grabbed my interest, and I wanted to learn along the way.
+
+I had a couple of incidents where my buses missed their scheduled times, causing me to be late for some classes. Because of this, I wanted to create a pathfinding system that would consider both reliability and travel time.
+
+I had also recently learned about SQL and wanted to see how to build a website with a backend API that uses a database. I collected the data using TransLink’s free API. I used Task Scheduler to call the API every five minutes from my computer and stored all the collected data in one database. I then aggregated the data to remove duplicates and extract the information needed to calculate lateness at each stop.
+
+At first, I wanted to create a date and time based system where users could select a date and time, and the system would use data from previous years to estimate the expected delay at each stop. However, I had to give up on that idea because I could not find enough historical data, and I did not want to collect data for several months.
+
+Instead, I decided to use time buckets, such as noon and night, to calculate stop delays rather than using exact times. This increased the amount of usable data and produced better estimates. For example, during the three days that I collected data, I might have had only three data points for bus 143 at stop X. However, if I used a four-hour time bucket and bus 143 reached that stop every 20 minutes, I could have around 36 data points over three days, which is much better.
+
+For my routing algorithm, I first used Dijkstra’s algorithm and then upgraded it to A* using geographic distance based heuristic(Euclidean), which is admissible in this case.
+
+Optimization was the largest part of this project. Since I had never worked with servers before, and there were limitations with my Render plan, I had to make many optimizations to reach an acceptable search time. In the beginning, a local search from my house to SFU took around eight seconds, while the same search on the Render website timed out after 30 seconds. Eventually, I lowered the local search time to around 1.5 seconds and the server search time to around seven seconds.
+
+My first optimization method was smart caching and reducing database queries, since database access took a significant amount of time. However, my FastAPI backend could not handle the caching system(memory wise) I had designed and kept crashing, mostly because of the limited resources included in my Render plan.
+
+After that, I decided to use snapshots. Basically, I loaded the required information into efficient arrays at the start of the deployment and used those arrays instead of repeatedly querying the database or maintaining large runtime caches. This is still a form of caching, but instead of storing the data as database rows, I stored it in a more efficient format for route searching.
+
+In the end, it was not practical to have active database queries and the backend API working together during every route search. I had to use snapshots because of both the limited resources of my Render plan and the high computational cost of route finding.
+
+For coding, I used Codex with GPT-5.6 Sol through the $20 plan. Since this was mostly an educational project, I was not too worried about using higher-end AI development tools. ChatGPT also helped me gather information and organize my thoughts.
+
+Overall, I am happy with where I left this project. Maybe I will give it another look in the future.
+
+Ramtin Rezaei
+August 4, 2026
+
+(for technical review read the rest of the read me file)
 # Vancouver Transit Planner
 
 A reliability-aware journey planner that turns TransLink GTFS schedules and
