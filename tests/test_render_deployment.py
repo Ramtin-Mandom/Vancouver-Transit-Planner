@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from src.api.dependencies import create_services
+from src.api.dependencies import ApiServices, create_services
 from src.api.main import app
 from src.routing.snapshot import SnapshotError, build_snapshot_from_rows
 from tests.routing.test_snapshot import CONNECTIONS, STOPS
@@ -83,10 +83,14 @@ def test_blueprint_and_build_script_are_production_safe():
     root = Path(__file__).parents[1]
     blueprint = (root / "render.yaml").read_text(encoding="utf-8")
     build = (root / "scripts" / "render_build.sh").read_text(encoding="utf-8")
-    assert "branch: debug" in blueprint
+    assert blueprint.count("branch: main") == 2
+    assert "branch: debug" not in blueprint
     assert "bash scripts/render_build.sh" in blueprint
     assert "--workers 1" in blueprint
-    assert "healthCheckPath: /health" in blueprint
+    assert "healthCheckPath: /ready" in blueprint
+    assert "runtime: static" in blueprint
+    assert "VITE_API_BASE_URL" in blueprint
+    assert "API_CORS_ORIGINS" in blueprint
     assert "DB_PASSWORD\n        sync: false" in blueprint
     assert "set -euo pipefail" in build
     assert "uvicorn" not in build
@@ -141,6 +145,49 @@ def test_production_missing_snapshot_never_activates_fallback(tmp_path, monkeypa
         create_services()
 
 
+def test_ready_returns_503_when_routing_is_unavailable():
+    app.state.services = ApiServices(None, None, None,
+                                     routing_unavailable_reason="routing snapshot missing")
+    app.state.owns_services = False
+    with TestClient(app) as client:
+        response = client.get("/ready")
+    assert response.status_code == 503
+    assert response.json()["ready"] is False
+    app.state.services = None
+
+
+def test_expired_snapshot_is_unready_and_route_error_is_explicit(tmp_path, monkeypatch):
+    from datetime import date
+    path = tmp_path / "expired"
+    calendars = [{"service_id": "S", "start_date": date(2020, 1, 1),
+        "end_date": date(2020, 1, 31), "monday": True, "tuesday": True,
+        "wednesday": True, "thursday": True, "friday": True,
+        "saturday": True, "sunday": True}]
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS,
+                             calendars=calendars)
+    monkeypatch.setenv("ROUTING_SNAPSHOT_PATH", str(path))
+    services = create_services()
+    app.state.services = services
+    app.state.owns_services = False
+    try:
+        with TestClient(app) as client:
+            readiness = client.get("/ready")
+            assert readiness.status_code == 503
+            assert readiness.json()["service_range"] == {
+                "earliest_date": "2020-01-01", "latest_date": "2020-01-31"}
+            response = client.post("/routes/plan", json={
+                "origin_stop_id": "A", "destination_stop_id": "C",
+                "departure_time": "08:00:00", "include_alternatives": False,
+                "minimum_samples": 20, "max_extra_minutes": 30,
+                "search_timeout_seconds": 30, "reliability_effect": 0.5,
+                "travel_time_effect": 0.5, "transfer_effect": 0})
+            assert response.status_code == 503
+            assert "GTFS feed expired" in response.json()["detail"]
+    finally:
+        app.state.services = None
+        services.close()
+
+
 def test_render_manifest_contains_build_measurements(tmp_path):
     path = tmp_path / "snapshot"
     report = build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
@@ -149,3 +196,86 @@ def test_render_manifest_contains_build_measurements(tmp_path):
     assert stored["build"]["size_bytes"] > 0
     assert "peak_rss_bytes" in stored["build"]
     assert report["counts"]["connections"] == 2
+
+
+def _snapshot_request(algorithm="astar", include_alternatives=False,
+                      timeout=30.0):
+    return {
+        "origin_stop_id": "A", "destination_stop_id": "C",
+        "departure_time": "08:00:00", "algorithm": algorithm,
+        "include_alternatives": include_alternatives,
+        "minimum_samples": 20, "max_extra_minutes": 30,
+        "search_timeout_seconds": timeout, "reliability_effect": 0.5,
+        "travel_time_effect": 0.5, "transfer_effect": 0,
+    }
+
+
+@pytest.mark.parametrize("algorithm", ["dijkstra", "astar"])
+def test_every_public_algorithm_runs_against_real_snapshot(
+    tmp_path, monkeypatch, algorithm
+):
+    path = tmp_path / algorithm
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
+    monkeypatch.setenv("ROUTING_SNAPSHOT_PATH", str(path))
+    services = create_services()
+    app.state.services = services
+    app.state.owns_services = False
+    try:
+        with TestClient(app) as client:
+            response = client.post("/routes/plan", json=_snapshot_request(algorithm))
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body["alternatives"]) == 1
+        assert set(body["alternatives"][0]["fallback_levels"]) == {"default"}
+        assert body["alternatives"][0]["insufficient_data"] is True
+    finally:
+        app.state.services = None
+        services.close()
+
+
+@pytest.mark.parametrize("include_alternatives", [False, True])
+def test_snapshot_timeout_is_http_504_with_real_planner(
+    tmp_path, monkeypatch, include_alternatives
+):
+    import src.routing.snapshot_search as search_module
+
+    path = tmp_path / f"timeout-{include_alternatives}"
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
+    monkeypatch.setenv("ROUTING_SNAPSHOT_PATH", str(path))
+    ticks = iter((0.0, 1.0))
+    monkeypatch.setattr(search_module, "perf_counter", lambda: next(ticks, 1.0))
+    services = create_services()
+    app.state.services = services
+    app.state.owns_services = False
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/routes/plan",
+                json=_snapshot_request(
+                    include_alternatives=include_alternatives, timeout=0.5
+                ),
+            )
+        assert response.status_code == 504
+        assert response.json()["detail"] == "Route planning exceeded the configured timeout."
+    finally:
+        app.state.services = None
+        services.close()
+
+
+def test_completed_empty_snapshot_search_is_normal_response(tmp_path, monkeypatch):
+    path = tmp_path / "no-route"
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
+    monkeypatch.setenv("ROUTING_SNAPSHOT_PATH", str(path))
+    services = create_services()
+    app.state.services = services
+    app.state.owns_services = False
+    try:
+        with TestClient(app) as client:
+            payload = _snapshot_request()
+            payload["departure_time"] = "26:00:00"
+            response = client.post("/routes/plan", json=payload)
+        assert response.status_code == 200
+        assert response.json()["alternatives"] == []
+    finally:
+        app.state.services = None
+        services.close()

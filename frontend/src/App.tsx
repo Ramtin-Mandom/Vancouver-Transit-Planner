@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Database, GitCompareArrows, ShieldCheck } from "lucide-react";
-import { ApiError, checkHealth, planRoutes } from "./api/client";
+import { ApiError, checkReady, planRoutes } from "./api/client";
 import type {
   ApiStatus,
   RoutePlanRequest,
@@ -21,8 +21,8 @@ export default function App() {
 
   useEffect(() => {
     const controller = new AbortController();
-    checkHealth(controller.signal)
-      .then(() => setApiStatus("connected"))
+    checkReady(controller.signal)
+      .then((status) => setApiStatus(status.ready ? "connected" : "unavailable"))
       .catch(() => setApiStatus("unavailable"));
     return () => controller.abort();
   }, []);

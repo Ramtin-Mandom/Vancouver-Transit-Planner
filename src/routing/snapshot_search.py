@@ -35,6 +35,7 @@ class SearchStats:
     heuristic_enabled: bool = False
     maximum_speed_mps: float | None = None
     heuristic_fallback_reason: str | None = None
+    timed_out: bool = False
 
 
 EARTH_RADIUS_METERS = 6_371_008.8
@@ -68,10 +69,14 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
            max_extra_seconds: int = 1_800, candidate_limit: int = 24,
            timeout_seconds: float = 30.0, collect_alternatives: bool = True,
            heuristic_metadata: dict[str, Any] | None = None,
+           clock=None,
 ) -> tuple[list[Label], list[int], SearchStats]:
     """Run Dijkstra or correctness-safe geographic A* on the state graph."""
     if algorithm not in {"dijkstra", "astar"}:
         raise ValueError("snapshot routing algorithm must be 'dijkstra' or 'astar'")
+    if timeout_seconds <= 0:
+        raise ValueError("search timeout must be positive")
+    clock = clock or perf_counter
     active = active_services(arrays, service_date)
     horizon = departure + search_horizon_seconds
     labels = [Label(origin, departure, 0, -1, True, -1, -1)]
@@ -124,7 +129,7 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     winners: list[int] = []
     winner_paths: set[tuple[int, ...]] = set()
     fastest_arrival: int | None = None
-    deadline = perf_counter() + timeout_seconds
+    deadline = clock() + timeout_seconds
     departures = arrays["departure_order"]
     offsets = arrays["departure_offsets"]
 
@@ -147,7 +152,8 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         stats.pushed += 1
 
     while queue:
-        if perf_counter() >= deadline:
+        if clock() >= deadline:
+            stats.timed_out = True
             break
         _, reached, _, label_index = heapq.heappop(queue)
         stats.popped += 1

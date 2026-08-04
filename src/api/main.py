@@ -6,6 +6,7 @@ import logging
 import os
 import asyncio
 from dataclasses import replace
+from datetime import date
 from time import perf_counter
 from contextlib import asynccontextmanager
 
@@ -135,7 +136,7 @@ async def unavailable_handler(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=503,
-        content={"detail": "Database services are currently unavailable."},
+        content={"detail": str(exc) or "Routing services are currently unavailable."},
     )
 
 
@@ -169,7 +170,7 @@ async def timeout_handler(
 
 @app.exception_handler(Exception)
 async def internal_error_handler(request: Request, exc: Exception) -> JSONResponse:
-    logger.error("Unhandled API error")
+    logger.exception("Unhandled API error")
     return JSONResponse(
         status_code=500,
         content={"detail": "An unexpected internal error occurred."},
@@ -182,31 +183,46 @@ def health() -> dict[str, str]:
 
 
 @app.get("/ready")
-def ready(request: Request) -> dict[str, object]:
+def ready(request: Request) -> JSONResponse:
     services = getattr(request.app.state, "services", None)
     if services is None:
-        return {"ready": False, "snapshot_loaded": False,
-                "reason": getattr(request.app.state, "snapshot_failure", None) or "routing services unavailable"}
+        content = {"ready": False, "snapshot_loaded": False,
+                   "reason": getattr(request.app.state, "snapshot_failure", None) or "routing services unavailable"}
+        return JSONResponse(status_code=503, content=content)
     if services.routing_unavailable_reason is not None:
-        return {"ready": False, "snapshot_loaded": False,
-                "autocomplete_available": True,
-                "reason": services.routing_unavailable_reason}
+        return JSONResponse(status_code=503, content={
+            "ready": False, "snapshot_loaded": False,
+            "autocomplete_available": True, "reason": services.routing_unavailable_reason})
     if services.snapshot is not None:
         manifest = services.snapshot.manifest
-        return {"ready": True, "snapshot_loaded": True,
-                "snapshot_version": manifest["format_version"],
-                "source_version": manifest.get("source_version"),
-                "counts": manifest["counts"]}
+        service_range = manifest.get("service_range", {})
+        latest = service_range.get("latest_date")
+        today = current_service_date()
+        if latest and today > date.fromisoformat(latest):
+            return JSONResponse(status_code=503, content={
+                "ready": False, "snapshot_loaded": True,
+                "reason": f"GTFS feed expired on {latest}; refresh the feed and rebuild the snapshot",
+                "service_range": service_range})
+        warning = None
+        if latest and (date.fromisoformat(latest) - today).days <= 30:
+            warning = f"GTFS feed expires on {latest}"
+        return JSONResponse(status_code=200, content={
+            "ready": True, "snapshot_loaded": True,
+            "snapshot_version": manifest["format_version"],
+            "source_version": manifest.get("source_version"),
+            "counts": manifest["counts"], "service_range": service_range,
+            "warning": warning})
     if services.warmup is None:
-        return {
+        content = {
             "ready": True,
             "gtfs_version": None,
             "essential_warmup_complete": True,
             "skytrain_warmup_complete": False,
             "background_warmup_running": False,
         }
+        return JSONResponse(status_code=200, content=content)
     state = services.warmup.state()
-    return {
+    content = {
         "ready": state.ready,
         "gtfs_version": state.gtfs_version,
         "essential_warmup_complete": state.essential_warmup_complete,
@@ -228,6 +244,7 @@ def ready(request: Request) -> dict[str, object]:
         "single_flight_wait_count": services.cache_manager.single_flight_wait_count
         if services.cache_manager is not None else 0,
     }
+    return JSONResponse(status_code=200 if state.ready else 503, content=content)
 
 
 @app.get("/stops/search", response_model=list[StopResponse])
@@ -262,6 +279,12 @@ def plan_routes(
     # The public API does not expose future-date planning yet. Timetable logic
     # still receives an internal Vancouver-local GTFS service date.
     service_date = current_service_date()
+    if services.snapshot is not None:
+        latest = services.snapshot.manifest.get("service_range", {}).get("latest_date")
+        if latest and service_date > date.fromisoformat(latest):
+            raise ServicesUnavailable(
+                f"GTFS feed expired on {latest}; refresh the feed and rebuild the snapshot"
+            )
     origin = services.transit_database.find_stop(request.origin_stop_id)
     if origin is None:
         raise HTTPException(

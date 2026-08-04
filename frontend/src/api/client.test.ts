@@ -1,10 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { planRoutes, searchStops } from "./client";
+import { checkReady, planRoutes, searchStops } from "./client";
 import type { RoutePlanRequest } from "./types";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("API client", () => {
+  it("uses routing readiness rather than process liveness", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ready: true, snapshot_loaded: true })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(checkReady()).resolves.toMatchObject({ ready: true });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8000/ready",
+      { signal: undefined }
+    );
+  });
+
+  it("reports an unavailable readiness response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({ detail: "GTFS feed expired" })
+    }));
+    await expect(checkReady()).rejects.toThrow("GTFS feed expired");
+  });
   it("constructs an encoded stop-search request", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

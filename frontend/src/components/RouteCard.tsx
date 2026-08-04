@@ -20,6 +20,7 @@ const fallbackLabels: Record<string, string> = {
   route_direction: "Route and direction profile",
   route: "Route-wide profile",
   network: "Network-wide profile",
+  default: "Conservative default (no sampled profile)",
   "insufficient-data": "Insufficient historical data"
 };
 
@@ -73,7 +74,7 @@ export function RouteCard({ alternative, labels }: Props) {
       {alternative.insufficient_data && (
         <div className="dataWarning" role="status">
           <AlertTriangle size={17} />
-          Limited historical data—one or more broader fallback profiles were used.
+          Limited historical data—one or more profiles are under-sampled or unavailable.
         </div>
       )}
 

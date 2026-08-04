@@ -66,6 +66,10 @@ def main() -> None:
             stops=fixture["stops"],
             connections=fixture["connections"],
             source_version=str(fixture.get("source_version", "render-fixture")),
+            reliability_profiles=fixture.get("reliability_profiles", ()),
+            reliability_fallback_profiles=fixture.get(
+                "reliability_fallback_profiles", ()
+            ),
             max_peak_rss_bytes=args.max_peak_rss_mb * 1024 * 1024,
         )
     else:
@@ -81,6 +85,7 @@ def main() -> None:
             calendars = connection.execute("SELECT * FROM transit.calendar ORDER BY service_id").fetchall()
             calendar_dates = connection.execute('SELECT service_id, service_date, exception_type FROM transit.calendar_dates ORDER BY service_date, service_id').fetchall()
             reliability_profiles = connection.execute('SELECT route_id, direction_id, time_window, reliability_probability, sample_count FROM transit.route_direction_reliability ORDER BY route_id, direction_id, time_window').fetchall()
+            fallback_profiles = connection.execute('SELECT profile_level, route_key, direction_key, reliability_probability, on_time_probability, sample_count, distinct_service_dates FROM transit.reliability_fallback_profiles ORDER BY profile_level, route_key, direction_key').fetchall()
             transfers = connection.execute('SELECT from_stop_id, to_stop_id, transfer_type, min_transfer_time FROM transit.transfers ORDER BY from_stop_id, to_stop_id').fetchall()
             with connection.cursor(name="routing_snapshot_connections") as cursor:
                 cursor.execute(CONNECTION_SQL)
@@ -88,6 +93,7 @@ def main() -> None:
                                                   connections=rows(cursor, max(1,args.batch_size)),
                                                   source_version=str(version), calendars=calendars,
                                                   calendar_dates=calendar_dates, reliability_profiles=reliability_profiles,
+                                                  reliability_fallback_profiles=fallback_profiles,
                                                   transfers=transfers,
                                                   max_peak_rss_bytes=args.max_peak_rss_mb * 1024 * 1024)
     build = report["build"]

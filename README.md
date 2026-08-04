@@ -44,13 +44,13 @@ explicit development fallback because they retain Python `Connection` graphs.
 ### Render deployment
 
 The repository includes `render.yaml` and `scripts/render_build.sh`. In the
-Render Dashboard, create a Blueprint from this repository (or configure an
-equivalent Python Web Service), select the `debug` branch, and use exactly:
+Render Dashboard, create a Blueprint from this repository. Production always
+deploys `main`; development branches are never deployment targets. The backend uses:
 
 ```text
 Build Command: bash scripts/render_build.sh
 Start Command: python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 1
-Health Check Path: /health
+Health Check Path: /ready
 ```
 
 Enter these database values manually as secret environment variables. They are
@@ -64,6 +64,11 @@ DB_NAME
 DB_USER
 DB_PASSWORD
 ```
+
+Set `API_CORS_ORIGINS` to the deployed frontend origin and set the static
+frontend's `VITE_API_BASE_URL` to the deployed backend origin. These values
+cannot be derived before Render creates the services and are intentionally not
+invented in the Blueprint. `render.yaml` pins Python 3.12 and Node 22.
 
 Use these non-secret environment values (the Blueprint supplies them):
 
@@ -91,6 +96,28 @@ GET https://YOUR-SERVICE.onrender.com/stops/search?query=Coquitlam&limit=10
 and route planning do not instantiate the PostgreSQL repositories, execute
 timetable SQL, or run the legacy startup cache warm-up. A missing snapshot
 keeps readiness false; production never silently activates the legacy cache.
+
+### Local PostgreSQL and feed refresh
+
+Copy `.env.example` to `.env`, replace `DB_PASSWORD`, then run
+`docker compose up -d`. Wait for `docker compose ps` to report PostgreSQL
+healthy. Stop it with `docker compose down`; the named volume preserves data.
+Use `docker compose down -v` only when you explicitly want to erase local data.
+The deployed snapshot API remains database-free at request time.
+
+To refresh an expiring feed, replace `data/extracted` with a current TransLink
+GTFS archive, validate and import it, then rebuild the snapshot:
+
+```powershell
+python -m src.data_ingestion.cli --dry-run
+python -m src.data_ingestion.cli --replace
+python -m scripts.build_routing_snapshot --output data/routing_snapshot
+python -m scripts.validate_routing_snapshot data/routing_snapshot
+```
+
+The snapshot records its earliest and latest usable service dates. `/ready`
+warns during the final 30 days and returns HTTP 503 after expiration; routing
+returns an explicit feed-expired error instead of an empty route list.
 
 ## PostgreSQL data ingestion
 

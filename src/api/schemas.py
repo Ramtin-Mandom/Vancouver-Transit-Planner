@@ -243,7 +243,7 @@ class RoutePlanRequest(ApiModel):
     origin_stop_id: str
     destination_stop_id: str
     departure_time: str
-    algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
+    algorithm: Literal["dijkstra", "astar"] = "astar"
     cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE
     include_alternatives: bool = False
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)

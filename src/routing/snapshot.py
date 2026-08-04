@@ -16,15 +16,18 @@ import numpy as np
 
 from src.reliability.classification import time_window
 from src.reliability.models import ProfileSelection, ReliabilityProfile
+from src.reliability.profiles import select_profile
 
 from .models import (Itinerary, LegStop, ReliableAlternative, ReliableSearchResult,
                      RouteLeg, SearchCacheStatistics, SearchDiagnosticCounters,
                      SearchDiagnostics, SearchDiagnosticTimings, SearchTiming, Stop)
 from .route_results import ranked_search_result
+from .reliable import ReliableSearchTimeout
 from .snapshot_search import (connection_path, search as snapshot_search,
                               haversine_meters, validate_label_path)
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
+SUPPORTED_FORMAT_VERSIONS = {2, FORMAT_VERSION}
 MAX_ALTERNATIVES = 3
 REQUIRED_ARRAYS = {
     "stop_ids", "stop_names", "stop_codes", "stop_lat", "stop_lon",
@@ -37,6 +40,12 @@ REQUIRED_ARRAYS = {
     "profile_route", "profile_direction", "profile_window", "profile_probability", "profile_samples",
     "parent_station", "pickup_type", "drop_off_type", "transfer_from",
     "transfer_to", "transfer_type", "transfer_seconds",
+}
+FALLBACK_PROFILE_ARRAYS = {
+    "profile_fallback_level", "profile_fallback_route",
+    "profile_fallback_direction", "profile_fallback_probability",
+    "profile_fallback_on_time", "profile_fallback_samples",
+    "profile_fallback_service_dates",
 }
 HEURISTIC_SAFETY_MARGIN = 1.001
 
@@ -168,7 +177,7 @@ def _small_unsigned(maximum: int) -> np.dtype:
 
 def _strings(values: Iterable[Any]) -> np.ndarray:
     materialized = ["" if value is None else str(value) for value in values]
-    width = max(1, *(len(value) for value in materialized))
+    width = max([1, *(len(value) for value in materialized)])
     return np.asarray(materialized, dtype=f"<U{width}")
 
 
@@ -178,6 +187,7 @@ def build_snapshot_from_rows(
     calendars: Iterable[Mapping[str, Any]] = (),
     calendar_dates: Iterable[Mapping[str, Any]] = (),
     reliability_profiles: Iterable[Mapping[str, Any]] = (),
+    reliability_fallback_profiles: Iterable[Mapping[str, Any]] = (),
     transfers: Iterable[Mapping[str, Any]] = (),
     intra_station_transfer_seconds: int = 120,
     max_peak_rss_bytes: int | None = None,
@@ -308,6 +318,25 @@ def build_snapshot_from_rows(
         arrays["profile_window"]=np.asarray([p[2] for p in profiles],dtype="uint8")
         arrays["profile_probability"]=np.asarray([p[3] for p in profiles],dtype="float32")
         arrays["profile_samples"]=np.asarray([p[4] for p in profiles],dtype="uint32")
+        fallback_profiles = list(reliability_fallback_profiles)
+        arrays["profile_fallback_level"] = _strings(
+            row["profile_level"] for row in fallback_profiles)
+        arrays["profile_fallback_route"] = _strings(
+            row.get("route_key", "*") for row in fallback_profiles)
+        arrays["profile_fallback_direction"] = np.asarray(
+            [int(row.get("direction_key", -1)) for row in fallback_profiles],
+            dtype="int32")
+        arrays["profile_fallback_probability"] = np.asarray(
+            [float(row["reliability_probability"]) for row in fallback_profiles],
+            dtype="float32")
+        arrays["profile_fallback_on_time"] = np.asarray(
+            [float(row["on_time_probability"]) for row in fallback_profiles],
+            dtype="float32")
+        arrays["profile_fallback_samples"] = np.asarray(
+            [int(row["sample_count"]) for row in fallback_profiles], dtype="uint32")
+        arrays["profile_fallback_service_dates"] = np.asarray(
+            [int(row.get("distinct_service_dates", 0)) for row in fallback_profiles],
+            dtype="uint32")
         transfer_rows = list(transfers)
         explicit_pairs = {
             (str(row["from_stop_id"]), str(row["to_stop_id"]))
@@ -351,6 +380,14 @@ def build_snapshot_from_rows(
                 np.save(path, array, allow_pickle=False)
         peak_rss = _check_peak_rss(max_peak_rss_bytes)
         array_size = sum(path.stat().st_size for path in temporary.glob("*.npy"))
+        bounded_starts = [value for value in starts if value > 0]
+        bounded_ends = [value for value in ends if value < np.iinfo(np.int32).max]
+        added_dates = [
+            row["service_date"].toordinal() for row in exception_rows
+            if int(row["exception_type"]) == 1
+        ]
+        earliest = min(bounded_starts + added_dates) if bounded_starts or added_dates else None
+        latest = max(bounded_ends + added_dates) if bounded_ends or added_dates else None
         manifest = {
             "format_version": FORMAT_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -365,6 +402,10 @@ def build_snapshot_from_rows(
                 "peak_rss_bytes": peak_rss,
             },
             "geographic_heuristic": _geographic_heuristic_metadata(arrays),
+            "service_range": {
+                "earliest_date": date.fromordinal(earliest).isoformat() if earliest else None,
+                "latest_date": date.fromordinal(latest).isoformat() if latest else None,
+            },
         }
         (temporary / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         # Windows cannot rename a directory containing open mmap handles.
@@ -398,10 +439,14 @@ class RoutingSnapshot:
             self.manifest = json.loads((self.path / "manifest.json").read_text(encoding="utf-8"))
         except Exception as exc:
             raise SnapshotError("snapshot manifest is missing or invalid") from exc
-        if self.manifest.get("format_version") != FORMAT_VERSION:
+        if self.manifest.get("format_version") not in SUPPORTED_FORMAT_VERSIONS:
             raise SnapshotError(f"unsupported snapshot format {self.manifest.get('format_version')!r}")
         declared = set(self.manifest.get("arrays", {}))
-        missing = REQUIRED_ARRAYS - declared
+        required = REQUIRED_ARRAYS | (
+            FALLBACK_PROFILE_ARRAYS
+            if self.manifest.get("format_version") == FORMAT_VERSION else set()
+        )
+        missing = required - declared
         if missing:
             raise SnapshotError(f"snapshot is missing arrays: {', '.join(sorted(missing))}")
         self.arrays: dict[str, np.ndarray] = {}
@@ -628,7 +673,13 @@ class SnapshotPlanner:
             timeout_seconds=float(_.get("timeout_seconds", 30.0)),
             collect_alternatives=include_alternatives,
             heuristic_metadata=self.snapshot.heuristic_metadata,
+            clock=_.get("_clock"),
         )
+        if stats.timed_out:
+            raise ReliableSearchTimeout(
+                f"snapshot search exceeded {float(_.get('timeout_seconds', 30.0)):g} seconds",
+                log_context={"algorithm": requested_algorithm, "timed_out": True},
+            )
         materialized: list[ReliableAlternative] = []
         identities: set[tuple] = set()
         for winner in winners:
@@ -656,11 +707,12 @@ class SnapshotPlanner:
             # never silently treated as perfectly reliable.
             probability=1.0
             for selection in selections:
-                probability *= float(selection.profile.reliability_probability) if selection.profile else 0.5
+                probability *= float(selection.profile.reliability_probability) if selection.profile else 0.0
+            probability = max(probability, 1e-9)
             itinerary=Itinerary(self.snapshot.stop(origin), self.snapshot.stop(destination), service_date,
                                 departure_time, timedelta(seconds=labels[winner].arrival), tuple(legs))
             alternative = ReliableAlternative(
-                itinerary, probability, -math.log(max(probability,1e-9)),
+                itinerary, probability, -math.log(probability),
                 tuple(selections))
             identity = self._semantic_identity(alternative)
             if identity in identities:
@@ -695,8 +747,30 @@ class SnapshotPlanner:
         a=self.snapshot.arrays; names=("overnight","morning_peak","midday","afternoon_peak","evening")
         mask=(a["profile_route"] == route) & (a["profile_window"] == names.index(window)) & (a["profile_direction"] == (-1 if direction is None else direction))
         matches=np.flatnonzero(mask)
-        if not len(matches):
-            return ProfileSelection(None,"insufficient-data",True)
-        i=int(matches[0]); probability=float(a["profile_probability"][i]); samples=int(a["profile_samples"][i])
-        profile=ReliabilityProfile(str(a["route_ids"][route]),None,None,None,samples,0,0,None,0,0,0,probability,1-probability,direction,window,reliability_probability=probability)
-        return ProfileSelection(profile,"route_direction_window",samples < minimum_samples)
+        profile = None
+        if len(matches):
+            i=int(matches[0]); probability=float(a["profile_probability"][i]); samples=int(a["profile_samples"][i])
+            profile=ReliabilityProfile(str(a["route_ids"][route]),None,None,None,samples,0,0,None,0,0,0,probability,1-probability,direction,window,reliability_probability=probability)
+
+        def fallback(level, route_id, direction_id):
+            if "profile_fallback_level" not in a:
+                return None
+            route_key = route_id or "*"
+            direction_key = -1 if direction_id is None else direction_id
+            selected = np.flatnonzero(
+                (a["profile_fallback_level"] == level)
+                & (a["profile_fallback_route"] == route_key)
+                & (a["profile_fallback_direction"] == direction_key))
+            if not len(selected):
+                return None
+            index = int(selected[0])
+            return {
+                "reliability_probability": float(a["profile_fallback_probability"][index]),
+                "on_time_probability": float(a["profile_fallback_on_time"][index]),
+                "sample_count": int(a["profile_fallback_samples"][index]),
+                "distinct_service_dates": int(a["profile_fallback_service_dates"][index]),
+            }
+
+        return select_profile(
+            str(a["route_ids"][route]), direction, profile, fallback, minimum_samples
+        )

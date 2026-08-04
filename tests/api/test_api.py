@@ -166,7 +166,7 @@ def valid_request(**overrides):
         "origin_stop_id": "646",
         "destination_stop_id": "31",
         "departure_time": "08:00:00",
-        "algorithm": "mc_raptor",
+        "algorithm": "astar",
         "include_alternatives": False,
         "minimum_samples": 20,
         "max_extra_minutes": 30,
@@ -225,7 +225,7 @@ def test_successful_route_response_preserves_ranked_order(client, api_services):
         "/routes/plan", json=valid_request(include_alternatives=True)
     )
     assert response.status_code == 200
-    assert api_services.planner.calls[-1][1]["algorithm"] == "mc_raptor"
+    assert api_services.planner.calls[-1][1]["algorithm"] == "astar"
     body = response.json()
     assert [item["legs"][0]["trip_id"] for item in body["alternatives"]] == [
         "BEST",
@@ -323,7 +323,7 @@ def test_invalid_cache_mode_is_rejected(client):
     assert response.status_code == 422
 
 
-@pytest.mark.parametrize("algorithm", ["baseline", "dijkstra", "astar", "mc_raptor"])
+@pytest.mark.parametrize("algorithm", ["dijkstra", "astar"])
 def test_route_request_accepts_and_dispatches_each_algorithm(
     client, api_services, algorithm
 ):
@@ -339,6 +339,15 @@ def test_route_request_rejects_unknown_algorithm(client):
         "/routes/plan", json=valid_request(algorithm="raptor")
     )
     assert response.status_code == 422
+
+
+@pytest.mark.parametrize("algorithm", ["baseline", "mc_raptor"])
+def test_route_request_rejects_experimental_algorithm(client, algorithm):
+    response = client.post(
+        "/routes/plan", json=valid_request(algorithm=algorithm)
+    )
+    assert response.status_code == 422
+    assert "algorithm" in response.text
 
 
 def test_diagnostics_are_returned_only_when_requested(client, api_services):

@@ -2,11 +2,14 @@ services:
   - type: web
     name: vancouver-transit-planner-api
     runtime: python
-    branch: debug
+    branch: main
+    autoDeployTrigger: commit
     buildCommand: bash scripts/render_build.sh
     startCommand: python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT --workers 1
-    healthCheckPath: /health
+    healthCheckPath: /ready
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.11
       - key: ROUTING_SNAPSHOT_PATH
         value: data/routing_snapshot
       - key: ROUTING_SNAPSHOT_REQUIRED
@@ -15,6 +18,10 @@ services:
         value: "false"
       - key: CACHE_WARMUP_ENABLED
         value: "false"
+      - key: ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB
+        value: "450"
+      - key: API_CORS_ORIGINS
+        sync: false
       - key: DB_HOST
         sync: false
       - key: DB_PORT
@@ -25,5 +32,21 @@ services:
         sync: false
       - key: DB_PASSWORD
         sync: false
-      - key: ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB
-        value: "450"
+
+  - type: web
+    name: vancouver-transit-planner-frontend
+    runtime: static
+    branch: main
+    autoDeployTrigger: commit
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      - key: NODE_VERSION
+        value: 22.16.0
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

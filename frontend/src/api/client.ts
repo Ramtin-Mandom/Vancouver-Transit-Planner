@@ -39,7 +39,7 @@ function errorMessage(status: number, payload: unknown): string {
   const defaults: Record<number, string> = {
     404: "One of the selected stops could not be found.",
     422: "Please review the trip details and try again.",
-    503: "The transit database is temporarily unavailable.",
+    503: "The routing service is temporarily unavailable.",
     504: "Route planning took too long. Try a narrower search."
   };
   return defaults[status] ?? "Something went wrong while contacting the planner.";
@@ -68,8 +68,14 @@ async function request<T>(
   return response.json() as Promise<T>;
 }
 
-export function checkHealth(signal?: AbortSignal): Promise<{ status: "ok" }> {
-  return request("/health", { signal });
+export interface Readiness {
+  ready: boolean;
+  snapshot_loaded?: boolean;
+  reason?: string;
+}
+
+export function checkReady(signal?: AbortSignal): Promise<Readiness> {
+  return request("/ready", { signal });
 }
 
 export function searchStops(

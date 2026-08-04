@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
+import json
 
 import pytest
 
@@ -43,14 +44,15 @@ def test_array_planner_and_concurrent_reads(snapshot):
     def route():
         return planner.get_ranked_route_result("A","C",date(2026,8,3),timedelta(hours=8))
     results=list(ThreadPoolExecutor(max_workers=4).map(lambda _:route(),range(12)))
-    assert all(result.alternatives[0].route_reliability == 0.25 for result in results)
+    assert all(result.alternatives[0].route_reliability == pytest.approx(1e-9)
+               for result in results)
     assert all(len(result.alternatives[0].itinerary.legs) == 2 for result in results)
     assert all(result.alternatives[0].itinerary.departure_time == timedelta(hours=8) for result in results)
 
 
 def test_incompatible_and_corrupt_snapshots(tmp_path):
     path=tmp_path/"snapshot"; build_snapshot_from_rows(path,stops=STOPS,connections=CONNECTIONS)
-    manifest=path/"manifest.json"; manifest.write_text(manifest.read_text().replace('"format_version": 2','"format_version": 999'))
+    manifest=path/"manifest.json"; manifest.write_text(manifest.read_text().replace(f'"format_version": {snapshot_module.FORMAT_VERSION}','"format_version": 999'))
     with pytest.raises(SnapshotError,match="unsupported"): RoutingSnapshot(path)
     catalog = SnapshotStopCatalog(path)
     try:
@@ -406,6 +408,69 @@ def test_snapshot_complete_search_is_invoked_once(snapshot, monkeypatch):
         include_alternatives=True,
     )
     assert calls == 1
+
+
+@pytest.mark.parametrize(
+    "exact_profiles,fallback_profiles,expected_level,insufficient",
+    [
+        ([{"route_id": "R", "direction_id": 0,
+           "time_window": "morning_peak", "reliability_probability": .91,
+           "sample_count": 100}], [], "route_direction_window", False),
+        ([{"route_id": "R", "direction_id": 0,
+           "time_window": "morning_peak", "reliability_probability": .91,
+           "sample_count": 5}], [], "route_direction_window", True),
+        ([], [{"profile_level": "route", "route_key": "R",
+               "direction_key": -1, "reliability_probability": .8,
+               "on_time_probability": .82, "sample_count": 80,
+               "distinct_service_dates": 12}], "route", False),
+        ([], [{"profile_level": "network", "route_key": "*",
+               "direction_key": -1, "reliability_probability": .7,
+               "on_time_probability": .72, "sample_count": 800,
+               "distinct_service_dates": 30}], "network", False),
+        ([], [], "default", True),
+    ],
+)
+def test_snapshot_reliability_uses_shared_fallback_policy(
+    tmp_path, exact_profiles, fallback_profiles, expected_level, insufficient
+):
+    path = tmp_path / expected_level
+    build_snapshot_from_rows(
+        path, stops=STOPS, connections=CONNECTIONS,
+        reliability_profiles=exact_profiles,
+        reliability_fallback_profiles=fallback_profiles,
+    )
+    loaded = RoutingSnapshot(path)
+    try:
+        result = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="dijkstra", minimum_samples=20,
+        )
+        selection = result.alternatives[0].profile_selections[0]
+        assert selection.fallback_level == expected_level
+        assert selection.insufficient_data is insufficient
+        assert (selection.profile is None) == (expected_level == "default")
+    finally:
+        loaded.close()
+
+
+def test_version_two_snapshot_without_fallback_arrays_remains_loadable(tmp_path):
+    path = tmp_path / "v2"
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["format_version"] = 2
+    for name in snapshot_module.FALLBACK_PROFILE_ARRAYS:
+        manifest["arrays"].pop(name)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    loaded = RoutingSnapshot(path)
+    try:
+        result = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="dijkstra",
+        )
+        assert set(result.alternatives[0].fallback_levels) == {"default"}
+    finally:
+        loaded.close()
 
 
 def test_single_route_mode_stops_at_first_destination_and_does_less_work(tmp_path):
