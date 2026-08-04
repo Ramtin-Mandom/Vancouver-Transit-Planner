@@ -13,6 +13,7 @@ export interface PlannerValues {
   origin: Stop | null;
   destination: Stop | null;
   departureTime: string;
+  includeAlternatives: boolean;
   reliability: number;
   transferEffect: number;
   minimumSamples: number;
@@ -31,6 +32,7 @@ export const DEFAULT_PLANNER_VALUES: PlannerValues = {
   origin: null,
   destination: null,
   departureTime: "08:00:00",
+  includeAlternatives: false,
   reliability: 50,
   transferEffect: 0,
   minimumSamples: 10,
@@ -72,6 +74,7 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
       origin_stop_id: values.origin.stop_id,
       destination_stop_id: values.destination.stop_id,
       departure_time: values.departureTime,
+      include_alternatives: values.includeAlternatives,
       minimum_samples: values.minimumSamples,
       max_extra_minutes: values.maxExtraMinutes,
       search_timeout_seconds: values.searchTimeoutSeconds,
@@ -150,6 +153,20 @@ export function TripPlannerForm({ loading, onSubmit }: Props) {
             onChange={(event) => update("departureTime", event.target.value)}
           />
           {errors.time && <small className="fieldError">{errors.time}</small>}
+        </div>
+        <div className="alternativesOption">
+          <label>
+          <input
+            type="checkbox"
+            aria-label="Alternatives"
+            checked={values.includeAlternatives}
+            onChange={(event) => update("includeAlternatives", event.target.checked)}
+          />
+            <span>
+              <strong>Alternatives</strong>
+              <small>Find up to 3 routes (may take longer).</small>
+            </span>
+          </label>
         </div>
       </div>
 

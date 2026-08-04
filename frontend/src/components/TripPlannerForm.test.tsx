@@ -35,10 +35,23 @@ async function selectBoth() {
 }
 
 describe("TripPlannerForm", () => {
-  it("does not render or submit an alternatives selector", async () => {
+  it("defaults alternatives off and sends the checked state", async () => {
     const onSubmit = vi.fn();
     render(<TripPlannerForm loading={false} onSubmit={onSubmit} />);
-    expect(screen.queryByLabelText("Alternatives")).not.toBeInTheDocument();
+    const alternatives = screen.getByRole("checkbox", { name: "Alternatives" });
+    expect(alternatives).not.toBeChecked();
+    await selectBoth();
+    await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
+    expect(onSubmit.mock.calls[0][0].include_alternatives).toBe(false);
+    await userEvent.click(alternatives);
+    await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
+    expect(onSubmit.mock.calls[1][0].include_alternatives).toBe(true);
+  });
+
+  it("does not render or submit the old route-count selector", async () => {
+    const onSubmit = vi.fn();
+    render(<TripPlannerForm loading={false} onSubmit={onSubmit} />);
+    expect(screen.queryByRole("combobox", { name: "Alternatives" })).not.toBeInTheDocument();
     await selectBoth();
     await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("route_number");

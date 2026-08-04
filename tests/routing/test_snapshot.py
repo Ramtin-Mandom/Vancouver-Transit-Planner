@@ -175,11 +175,11 @@ def test_snapshot_returns_up_to_three_distinct_alternatives(
         planner = SnapshotPlanner(loaded)
         first = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
-            algorithm="dijkstra", route_number=3,
+            algorithm="dijkstra", route_number=3, include_alternatives=True,
         )
         repeated = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
-            algorithm="dijkstra", route_number=3,
+            algorithm="dijkstra", route_number=3, include_alternatives=True,
         )
         assert len(first.alternatives) == expected
         identities = [itinerary_identity(item.itinerary) for item in first.alternatives]
@@ -203,10 +203,12 @@ def test_snapshot_alternatives_obey_extra_window_and_preserve_fastest(tmp_path):
         dijkstra = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
             algorithm="dijkstra", route_number=3, max_extra_minutes=10,
+            include_alternatives=True,
         )
         astar = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
             algorithm="astar", route_number=3, max_extra_minutes=10,
+            include_alternatives=True,
         )
         assert len(dijkstra.alternatives) == 3
         assert all(
@@ -238,6 +240,7 @@ def test_slower_equal_route_is_dominated(tmp_path):
     try:
         result = SnapshotPlanner(loaded).get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+            include_alternatives=True,
         )
         assert [item.itinerary.legs[0].trip_id for item in result.alternatives] == ["FAST"]
     finally:
@@ -260,6 +263,7 @@ def test_equivalent_trip_instances_are_deduplicated(tmp_path):
     try:
         result = SnapshotPlanner(loaded).get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+            include_alternatives=True,
         )
         assert len(result.alternatives) == 1
     finally:
@@ -288,6 +292,7 @@ def test_adjacent_bay_suffix_detour_is_dominated(tmp_path):
     try:
         result = SnapshotPlanner(loaded).get_ranked_route_result(
             "A", "B1", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+            include_alternatives=True,
         )
         assert [item.itinerary.legs[0].trip_id for item in result.alternatives] == ["DIRECT"]
     finally:
@@ -306,8 +311,35 @@ def test_snapshot_complete_search_is_invoked_once(snapshot, monkeypatch):
     monkeypatch.setattr(snapshot_module, "snapshot_search", counted)
     SnapshotPlanner(snapshot).get_ranked_route_result(
         "A", "C", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+        include_alternatives=True,
     )
     assert calls == 1
+
+
+def test_single_route_mode_stops_at_first_destination_and_does_less_work(tmp_path):
+    loaded = _direct_alternative_snapshot(tmp_path, 4)
+    try:
+        planner = SnapshotPlanner(loaded)
+        single = planner.get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            include_alternatives=False, include_diagnostics=True,
+        )
+        alternatives = planner.get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            include_alternatives=True, include_diagnostics=True,
+        )
+        assert len(single.alternatives) == 1
+        assert len(alternatives.alternatives) == 3
+        assert (single.alternatives[0].itinerary
+                == alternatives.alternatives[0].itinerary)
+        assert single.diagnostics.counters.destination_labels_found == 1
+        assert alternatives.diagnostics.counters.destination_labels_found == 4
+        assert (single.diagnostics.counters.states_popped
+                < alternatives.diagnostics.counters.states_popped)
+        assert (single.diagnostics.counters.labels_created
+                <= alternatives.diagnostics.counters.labels_created)
+    finally:
+        loaded.close()
 
 
 def test_pickup_dropoff_transfer_and_maximum_transfer(tmp_path):

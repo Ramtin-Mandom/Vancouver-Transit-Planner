@@ -19,6 +19,7 @@ from src.reliability.profiles import ProfileResolver
 from src.routing.reliable import ReliableSearchTimeout
 from src.routing.service_date import current_service_date
 from src.routing.snapshot import SnapshotError
+from src.routing.snapshot import MAX_ALTERNATIVES
 
 from .dependencies import (
     ApiServices,
@@ -292,7 +293,8 @@ def plan_routes(
         algorithm=request.algorithm,
         cache_mode=request.cache_mode,
         minimum_samples=request.minimum_samples,
-        route_number=request.route_number,
+        route_number=(MAX_ALTERNATIVES if request.include_alternatives else 1),
+        include_alternatives=request.include_alternatives,
         preferences=request.routing_preferences(),
         max_extra_minutes=request.max_extra_minutes,
         timeout_seconds=request.search_timeout_seconds,
@@ -300,7 +302,8 @@ def plan_routes(
     )
     # Defense in depth: the public endpoint never serializes more than three
     # candidates, even if a custom planner ignores route_number.
-    result = replace(result, alternatives=result.alternatives[:3])
+    public_limit = MAX_ALTERNATIVES if request.include_alternatives else 1
+    result = replace(result, alternatives=result.alternatives[:public_limit])
     return serialize_result(
         result,
         origin,

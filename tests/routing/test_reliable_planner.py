@@ -5,6 +5,7 @@ import pytest
 
 from src.reliability.models import ProfileSelection, ReliabilityProfile
 from src.routing.planner import TransitPlanner
+from src.routing.cache import CacheConfiguration, RoutingCacheManager
 from src.routing.reliable import ReliableSearchTimeout
 from tests.routing.test_planner import (
     FakeDatabase,
@@ -38,6 +39,29 @@ class Resolver:
         if probability is None:
             return ProfileSelection(None, "insufficient-data", True)
         return ProfileSelection(profile(probability), "exact", False)
+
+
+def test_response_cache_distinguishes_alternative_mode():
+    trips = {
+        "T": [connection("T", "weekday", "R", "A", "D", at(8), at(8, 10))]
+    }
+    cache = RoutingCacheManager(CacheConfiguration())
+    planner = TransitPlanner(
+        FakeDatabase(stops("A", "D"), trips), cache_manager=cache
+    )
+    resolver = Resolver({("R", "D"): .9})
+    common = dict(
+        algorithm="dijkstra", cache_mode="shared", include_diagnostics=True,
+    )
+    planner.get_ranked_route_result(
+        "A", "D", MONDAY, at(7, 59), resolver,
+        route_number=1, include_alternatives=False, **common,
+    )
+    planner.get_ranked_route_result(
+        "A", "D", MONDAY, at(7, 59), resolver,
+        route_number=3, include_alternatives=True, **common,
+    )
+    assert cache.responses.statistics().entries == 2
 
 
 def test_two_leg_reliability_is_multiplied():

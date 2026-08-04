@@ -267,6 +267,7 @@ class TransitPlanner:
         if cache_mode not in {"request", "shared"}:
             raise ValueError("cache_mode must be 'request' or 'shared'")
         active_cache = self.cache_manager if cache_mode == "shared" else None
+        include_alternatives = bool(bounds.pop("include_alternatives", False))
         # Normalize effective defaults before constructing the exact response
         # key so omitted and explicitly supplied equivalent inputs can reuse it.
         bounds.setdefault("trip_loading_mode", "frontier")
@@ -283,6 +284,7 @@ class TransitPlanner:
             gtfs_version, profile_version, cache_mode,
             origin_stop_id, destination_stop_id,
             service_date, departure_time, algorithm, route_number,
+            include_alternatives,
             tuple(sorted(vars(preferences).items())) if preferences is not None else None,
             getattr(resolver, "minimum_samples", None),
             tuple(sorted((name, repr(value)) for name, value in bounds.items())),

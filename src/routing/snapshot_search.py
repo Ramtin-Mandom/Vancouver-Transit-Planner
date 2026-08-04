@@ -47,7 +47,7 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
            departure: int, service_date, *, algorithm: str,
            max_transfers: int = 3, search_horizon_seconds: int = 10_800,
            max_extra_seconds: int = 1_800, candidate_limit: int = 24,
-           timeout_seconds: float = 30.0,
+           timeout_seconds: float = 30.0, collect_alternatives: bool = True,
 ) -> tuple[list[Label], list[int], SearchStats]:
     """Run Dijkstra or zero-heuristic A* on the identical timetable state graph.
 
@@ -110,6 +110,8 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
                 winners.append(label_index)
                 if fastest_arrival is None:
                     fastest_arrival = reached
+                if not collect_alternatives:
+                    break
                 if len(winners) >= candidate_limit:
                     break
             continue

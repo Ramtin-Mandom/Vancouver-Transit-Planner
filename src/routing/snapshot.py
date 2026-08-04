@@ -25,6 +25,7 @@ from .snapshot_search import (connection_path, search as snapshot_search,
                               validate_label_path)
 
 FORMAT_VERSION = 2
+MAX_ALTERNATIVES = 3
 REQUIRED_ARRAYS = {
     "stop_ids", "stop_names", "stop_codes", "stop_lat", "stop_lon",
     "trip_ids", "route_ids", "route_names", "service_ids", "from_stop",
@@ -519,7 +520,8 @@ class SnapshotPlanner:
 
     def get_ranked_route_result(self, origin_stop_id: str, destination_stop_id: str,
                                 service_date: date, departure_time: timedelta, resolver=None,
-                                *, route_number=3, preferences=None, algorithm="astar",
+                                *, route_number=MAX_ALTERNATIVES, preferences=None,
+                                algorithm="astar", include_alternatives=False,
                                 include_diagnostics=False, **_: Any) -> ReliableSearchResult:
         requested_algorithm = str(algorithm).strip().lower()
         if requested_algorithm == "baseline":
@@ -529,15 +531,19 @@ class SnapshotPlanner:
         started = perf_counter(); a = self.snapshot.arrays
         origin = self.snapshot.stop_index(origin_stop_id); destination = self.snapshot.stop_index(destination_stop_id)
         departure_seconds = max(0, int(departure_time.total_seconds()))
-        route_limit = min(3, max(1, int(route_number)))
+        route_limit = min(
+            MAX_ALTERNATIVES, max(1, int(route_number))
+        ) if include_alternatives else 1
         labels, winners, stats = snapshot_search(
             a, origin, destination, departure_seconds, service_date,
             algorithm=requested_algorithm,
             max_transfers=int(_.get("max_transfers", 3)),
             search_horizon_seconds=int(_.get("search_horizon_minutes", 180)) * 60,
             max_extra_seconds=int(_.get("max_extra_minutes", 30)) * 60,
-            candidate_limit=max(8, route_limit * 4),
+            candidate_limit=(max(8, route_limit * 4)
+                             if include_alternatives else 1),
             timeout_seconds=float(_.get("timeout_seconds", 30.0)),
+            collect_alternatives=include_alternatives,
         )
         materialized: list[ReliableAlternative] = []
         identities: set[tuple] = set()
