@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 
 from src.api.dependencies import ApiServices
 from src.api.main import app
-from src.routing.reliable import ReliableSearchTimeout
 from src.reliability.models import ProfileSelection
 from src.routing.models import (
     Itinerary,
@@ -15,17 +14,21 @@ from src.routing.models import (
     ReliableAlternative,
     ReliableSearchResult,
     RouteLeg,
-    SearchTiming,
     SearchCacheStatistics,
     SearchDiagnosticCounters,
     SearchDiagnostics,
     SearchDiagnosticTimings,
+    SearchTiming,
     Stop,
 )
+from src.routing.reliable import ReliableSearchTimeout
 
-
-ORIGIN = Stop("646", "Granville Station", "50001", Decimal("49.283"), Decimal("-123.117"))
-DESTINATION = Stop("31", "UBC Exchange", "60001", Decimal("49.267"), Decimal("-123.247"))
+ORIGIN = Stop(
+    "646", "Granville Station", "50001", Decimal("49.283"), Decimal("-123.117")
+)
+DESTINATION = Stop(
+    "31", "UBC Exchange", "60001", Decimal("49.267"), Decimal("-123.247")
+)
 
 
 class FakeTransitDatabase:
@@ -83,9 +86,7 @@ def alternative(trip_id, departure_hour, arrival_hour, score):
         itinerary=itinerary,
         route_reliability=0.82,
         reliability_cost=0.2,
-        profile_selections=(
-            ProfileSelection(None, "route_direction_window", False),
-        ),
+        profile_selections=(ProfileSelection(None, "route_direction_window", False),),
         speed_component=0.94,
         combined_score=score,
     )
@@ -130,14 +131,18 @@ def client(api_services):
 
 def test_incompatible_routing_snapshot_keeps_autocomplete_available():
     services = ApiServices(
-        FakeTransitDatabase(), None, None,
+        FakeTransitDatabase(),
+        None,
+        None,
         routing_unavailable_reason="unsupported snapshot format 1",
     )
     app.state.services = services
     app.state.owns_services = False
     try:
         with TestClient(app, raise_server_exceptions=False) as partial_client:
-            response = partial_client.get("/stops/search", params={"query": "co", "limit": 10})
+            response = partial_client.get(
+                "/stops/search", params={"query": "co", "limit": 10}
+            )
             assert response.status_code == 200
             readiness = partial_client.get("/ready")
             assert readiness.json() == {
@@ -146,11 +151,14 @@ def test_incompatible_routing_snapshot_keeps_autocomplete_available():
                 "autocomplete_available": True,
                 "reason": "unsupported snapshot format 1",
             }
-            route = partial_client.post("/routes/plan", json={
-                "origin_stop_id": ORIGIN.stop_id,
-                "destination_stop_id": DESTINATION.stop_id,
-                "departure_time": "08:00:00",
-            })
+            route = partial_client.post(
+                "/routes/plan",
+                json={
+                    "origin_stop_id": ORIGIN.stop_id,
+                    "destination_stop_id": DESTINATION.stop_id,
+                    "departure_time": "08:00:00",
+                },
+            )
             assert route.status_code == 503
     finally:
         app.state.services = None
@@ -214,9 +222,7 @@ def test_short_or_blank_stop_query_is_rejected(client, query):
 
 @pytest.mark.parametrize("limit", [0, 21])
 def test_stop_search_limit_is_validated(client, limit):
-    response = client.get(
-        "/stops/search", params={"query": "station", "limit": limit}
-    )
+    response = client.get("/stops/search", params={"query": "station", "limit": limit})
     assert response.status_code == 422
 
 
@@ -273,9 +279,7 @@ def test_include_alternatives_defaults_false_and_selects_internal_limit(
     assert response.status_code == 200
     assert api_services.planner.calls[-1][1]["include_alternatives"] is False
     assert api_services.planner.calls[-1][1]["route_number"] == 1
-    enabled = client.post(
-        "/routes/plan", json=valid_request(include_alternatives=True)
-    )
+    enabled = client.post("/routes/plan", json=valid_request(include_alternatives=True))
     assert enabled.status_code == 200
     assert api_services.planner.calls[-1][1]["include_alternatives"] is True
     assert api_services.planner.calls[-1][1]["route_number"] == 3
@@ -309,17 +313,13 @@ def test_public_route_request_rejects_user_service_date(client):
 
 
 def test_route_request_can_select_request_local_cache_mode(client, api_services):
-    response = client.post(
-        "/routes/plan", json=valid_request(cache_mode="request")
-    )
+    response = client.post("/routes/plan", json=valid_request(cache_mode="request"))
     assert response.status_code == 200
     assert api_services.planner.calls[-1][1]["cache_mode"] == "request"
 
 
 def test_invalid_cache_mode_is_rejected(client):
-    response = client.post(
-        "/routes/plan", json=valid_request(cache_mode="global")
-    )
+    response = client.post("/routes/plan", json=valid_request(cache_mode="global"))
     assert response.status_code == 422
 
 
@@ -327,25 +327,19 @@ def test_invalid_cache_mode_is_rejected(client):
 def test_route_request_accepts_and_dispatches_each_algorithm(
     client, api_services, algorithm
 ):
-    response = client.post(
-        "/routes/plan", json=valid_request(algorithm=algorithm)
-    )
+    response = client.post("/routes/plan", json=valid_request(algorithm=algorithm))
     assert response.status_code == 200
     assert api_services.planner.calls[-1][1]["algorithm"] == algorithm
 
 
 def test_route_request_rejects_unknown_algorithm(client):
-    response = client.post(
-        "/routes/plan", json=valid_request(algorithm="raptor")
-    )
+    response = client.post("/routes/plan", json=valid_request(algorithm="raptor"))
     assert response.status_code == 422
 
 
 @pytest.mark.parametrize("algorithm", ["baseline", "mc_raptor"])
 def test_route_request_rejects_experimental_algorithm(client, algorithm):
-    response = client.post(
-        "/routes/plan", json=valid_request(algorithm=algorithm)
-    )
+    response = client.post("/routes/plan", json=valid_request(algorithm=algorithm))
     assert response.status_code == 422
     assert "algorithm" in response.text
 
@@ -361,15 +355,15 @@ def test_diagnostics_are_returned_only_when_requested(client, api_services):
     def profiled(*args, **kwargs):
         result = original(*args, **kwargs)
         return ReliableSearchResult(
-            result.alternatives, result.timing, result.labels_pruned,
+            result.alternatives,
+            result.timing,
+            result.labels_pruned,
             diagnostics if kwargs.get("include_diagnostics") else None,
         )
 
     api_services.planner.get_ranked_route_result = profiled
     plain = client.post("/routes/plan", json=valid_request())
-    enabled = client.post(
-        "/routes/plan", json=valid_request(include_diagnostics=True)
-    )
+    enabled = client.post("/routes/plan", json=valid_request(include_diagnostics=True))
     assert plain.json()["diagnostics"] is None
     assert enabled.json()["diagnostics"]["timings_ms"]["measured_search_ms"] == 2.0
     assert api_services.planner.calls[-1][1]["include_diagnostics"] is True
@@ -386,11 +380,11 @@ def test_timeout_response_includes_partial_diagnostics(client, api_services):
         raise ReliableSearchTimeout("exceeded", diagnostics, {"timed_out": True})
 
     api_services.planner.get_ranked_route_result = timeout
-    response = client.post(
-        "/routes/plan", json=valid_request(include_diagnostics=True)
-    )
+    response = client.post("/routes/plan", json=valid_request(include_diagnostics=True))
     assert response.status_code == 504
-    assert response.json()["detail"] == "Route planning exceeded the configured timeout."
+    assert (
+        response.json()["detail"] == "Route planning exceeded the configured timeout."
+    )
     assert response.json()["diagnostics"]["counters"]["queue_pops"] == 2
 
 
@@ -439,9 +433,7 @@ def test_invalid_ranking_weights_are_rejected(client, weights):
 
 
 def test_unknown_stop_maps_to_404(client):
-    response = client.post(
-        "/routes/plan", json=valid_request(origin_stop_id="missing")
-    )
+    response = client.post("/routes/plan", json=valid_request(origin_stop_id="missing"))
     assert response.status_code == 404
     assert response.json()["detail"] == "Unknown origin stop_id: missing"
 

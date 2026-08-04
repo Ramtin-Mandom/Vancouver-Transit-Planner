@@ -6,11 +6,11 @@ import json
 import math
 import os
 import shutil
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from collections.abc import Iterable, Mapping
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
-from typing import Any, Iterable, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -18,33 +18,75 @@ from src.reliability.classification import time_window
 from src.reliability.models import ProfileSelection, ReliabilityProfile
 from src.reliability.profiles import select_profile
 
-from .models import (Itinerary, LegStop, ReliableAlternative, ReliableSearchResult,
-                     RouteLeg, SearchCacheStatistics, SearchDiagnosticCounters,
-                     SearchDiagnostics, SearchDiagnosticTimings, SearchTiming, Stop)
-from .route_results import ranked_search_result
+from .models import (
+    Itinerary,
+    LegStop,
+    ReliableAlternative,
+    ReliableSearchResult,
+    RouteLeg,
+    SearchCacheStatistics,
+    SearchDiagnosticCounters,
+    SearchDiagnostics,
+    SearchDiagnosticTimings,
+    SearchTiming,
+    Stop,
+)
 from .reliable import ReliableSearchTimeout
-from .snapshot_search import (connection_path, search as snapshot_search,
-                              haversine_meters, validate_label_path)
+from .route_results import ranked_search_result
+from .snapshot_search import connection_path, haversine_meters, validate_label_path
+from .snapshot_search import search as snapshot_search
 
 FORMAT_VERSION = 3
 SUPPORTED_FORMAT_VERSIONS = {2, FORMAT_VERSION}
 MAX_ALTERNATIVES = 3
 REQUIRED_ARRAYS = {
-    "stop_ids", "stop_names", "stop_codes", "stop_lat", "stop_lon",
-    "trip_ids", "route_ids", "route_names", "service_ids", "from_stop",
-    "to_stop", "departure_seconds", "arrival_seconds", "trip_index",
-    "route_index", "service_index", "stop_sequence", "direction_id",
-    "scan_order", "departure_order", "departure_offsets",
-    "service_start_ordinal", "service_end_ordinal", "service_weekday_mask",
-    "exception_service", "exception_date_ordinal", "exception_type",
-    "profile_route", "profile_direction", "profile_window", "profile_probability", "profile_samples",
-    "parent_station", "pickup_type", "drop_off_type", "transfer_from",
-    "transfer_to", "transfer_type", "transfer_seconds",
+    "stop_ids",
+    "stop_names",
+    "stop_codes",
+    "stop_lat",
+    "stop_lon",
+    "trip_ids",
+    "route_ids",
+    "route_names",
+    "service_ids",
+    "from_stop",
+    "to_stop",
+    "departure_seconds",
+    "arrival_seconds",
+    "trip_index",
+    "route_index",
+    "service_index",
+    "stop_sequence",
+    "direction_id",
+    "scan_order",
+    "departure_order",
+    "departure_offsets",
+    "service_start_ordinal",
+    "service_end_ordinal",
+    "service_weekday_mask",
+    "exception_service",
+    "exception_date_ordinal",
+    "exception_type",
+    "profile_route",
+    "profile_direction",
+    "profile_window",
+    "profile_probability",
+    "profile_samples",
+    "parent_station",
+    "pickup_type",
+    "drop_off_type",
+    "transfer_from",
+    "transfer_to",
+    "transfer_type",
+    "transfer_seconds",
 }
 FALLBACK_PROFILE_ARRAYS = {
-    "profile_fallback_level", "profile_fallback_route",
-    "profile_fallback_direction", "profile_fallback_probability",
-    "profile_fallback_on_time", "profile_fallback_samples",
+    "profile_fallback_level",
+    "profile_fallback_route",
+    "profile_fallback_direction",
+    "profile_fallback_probability",
+    "profile_fallback_on_time",
+    "profile_fallback_samples",
     "profile_fallback_service_dates",
 }
 HEURISTIC_SAFETY_MARGIN = 1.001
@@ -63,13 +105,17 @@ def _geographic_heuristic_metadata(arrays: Mapping[str, np.ndarray]) -> dict[str
     try:
         coordinates = [
             (_coordinate(lat, True), _coordinate(lon, False))
-            for lat, lon in zip(arrays["stop_lat"], arrays["stop_lon"])
+            for lat, lon in zip(arrays["stop_lat"], arrays["stop_lon"], strict=False)
         ]
         maximum = 0.0
         edge_count = 0
         for source, target, departure, arrival in zip(
-                arrays["from_stop"], arrays["to_stop"],
-                arrays["departure_seconds"], arrays["arrival_seconds"]):
+            arrays["from_stop"],
+            arrays["to_stop"],
+            arrays["departure_seconds"],
+            arrays["arrival_seconds"],
+            strict=False,
+        ):
             source, target = int(source), int(target)
             distance = haversine_meters(*coordinates[source], *coordinates[target])
             if distance <= 0:
@@ -80,8 +126,12 @@ def _geographic_heuristic_metadata(arrays: Mapping[str, np.ndarray]) -> dict[str
             maximum = max(maximum, distance / duration)
             edge_count += 1
         for source, target, kind, duration in zip(
-                arrays["transfer_from"], arrays["transfer_to"],
-                arrays["transfer_type"], arrays["transfer_seconds"]):
+            arrays["transfer_from"],
+            arrays["transfer_to"],
+            arrays["transfer_type"],
+            arrays["transfer_seconds"],
+            strict=False,
+        ):
             if int(kind) == 3:
                 continue
             source, target = int(source), int(target)
@@ -95,9 +145,12 @@ def _geographic_heuristic_metadata(arrays: Mapping[str, np.ndarray]) -> dict[str
             edge_count += 1
         if edge_count == 0 or maximum <= 0:
             raise ValueError("snapshot has no positive-displacement spatial edges")
-        return {"enabled": True, "maximum_speed_mps": maximum * HEURISTIC_SAFETY_MARGIN,
-                "safety_margin": HEURISTIC_SAFETY_MARGIN,
-                "validated_spatial_edges": edge_count}
+        return {
+            "enabled": True,
+            "maximum_speed_mps": maximum * HEURISTIC_SAFETY_MARGIN,
+            "safety_margin": HEURISTIC_SAFETY_MARGIN,
+            "validated_spatial_edges": edge_count,
+        }
     except (KeyError, IndexError, TypeError, ValueError, OverflowError) as exc:
         return {"enabled": False, "reason": str(exc)}
 
@@ -109,6 +162,7 @@ class SnapshotError(RuntimeError):
 def _rss_bytes() -> int | None:
     try:
         import resource
+
         value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
         return int(value if os.name == "nt" else value * 1024)
     except Exception:
@@ -136,13 +190,13 @@ def _rss_bytes() -> int | None:
             get_process.restype = wintypes.HANDLE
             get_memory = ctypes.windll.psapi.GetProcessMemoryInfo
             get_memory.argtypes = (
-                wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD
+                wintypes.HANDLE,
+                ctypes.POINTER(Counters),
+                wintypes.DWORD,
             )
             get_memory.restype = wintypes.BOOL
             handle = get_process()
-            if get_memory(
-                handle, ctypes.byref(counters), counters.cb
-            ):
+            if get_memory(handle, ctypes.byref(counters), counters.cb):
                 return int(counters.PeakWorkingSetSize)
         except Exception:  # pragma: no cover - platform dependent
             pass
@@ -182,8 +236,11 @@ def _strings(values: Iterable[Any]) -> np.ndarray:
 
 
 def build_snapshot_from_rows(
-    output: str | Path, *, stops: Iterable[Mapping[str, Any]],
-    connections: Iterable[Mapping[str, Any]], source_version: str = "fixture",
+    output: str | Path,
+    *,
+    stops: Iterable[Mapping[str, Any]],
+    connections: Iterable[Mapping[str, Any]],
+    source_version: str = "fixture",
     calendars: Iterable[Mapping[str, Any]] = (),
     calendar_dates: Iterable[Mapping[str, Any]] = (),
     reliability_profiles: Iterable[Mapping[str, Any]] = (),
@@ -213,8 +270,15 @@ def build_snapshot_from_rows(
     try:
         with spool.open("w", encoding="utf-8", newline="\n") as spool_file:
             for row in connections:
-                for key in ("from_stop_id", "to_stop_id", "trip_id", "route_id",
-                            "service_id", "departure_seconds", "arrival_seconds"):
+                for key in (
+                    "from_stop_id",
+                    "to_stop_id",
+                    "trip_id",
+                    "route_id",
+                    "service_id",
+                    "departure_seconds",
+                    "arrival_seconds",
+                ):
                     if row.get(key) is None:
                         raise SnapshotError(f"connection missing required field {key}")
                 departure = int(row["departure_seconds"])
@@ -238,7 +302,11 @@ def build_snapshot_from_rows(
                     if kind == "route" and index == len(route_names):
                         route_names.append(str(row.get("route_name") or value))
                 normalized = (
-                    from_stop, to_stop, departure, arrival, *indexes,
+                    from_stop,
+                    to_stop,
+                    departure,
+                    arrival,
+                    *indexes,
                     int(row.get("stop_sequence", 0)),
                     -1 if row.get("direction_id") is None else int(row["direction_id"]),
                     int(row.get("pickup_type") or 0),
@@ -254,12 +322,21 @@ def build_snapshot_from_rows(
             "stop_ids": _strings(stop_ids),
             "stop_names": _strings(row["stop_name"] for row in stop_rows),
             "stop_codes": _strings(row.get("stop_code") for row in stop_rows),
-            "stop_lat": np.asarray([row.get("stop_lat", np.nan) for row in stop_rows], dtype="float32"),
-            "stop_lon": np.asarray([row.get("stop_lon", np.nan) for row in stop_rows], dtype="float32"),
-            "parent_station": np.asarray([
-                stop_map.get(str(row.get("parent_station")), -1)
-                if row.get("parent_station") else -1 for row in stop_rows
-            ], dtype="int32"),
+            "stop_lat": np.asarray(
+                [row.get("stop_lat", np.nan) for row in stop_rows], dtype="float32"
+            ),
+            "stop_lon": np.asarray(
+                [row.get("stop_lon", np.nan) for row in stop_rows], dtype="float32"
+            ),
+            "parent_station": np.asarray(
+                [
+                    stop_map.get(str(row.get("parent_station")), -1)
+                    if row.get("parent_station")
+                    else -1
+                    for row in stop_rows
+                ],
+                dtype="int32",
+            ),
             "trip_ids": _strings(dictionaries["trip"].keys()),
             "route_ids": _strings(dictionaries["route"].keys()),
             "route_names": _strings(route_names),
@@ -283,100 +360,179 @@ def build_snapshot_from_rows(
         with spool.open("r", encoding="utf-8") as spool_file:
             for position, line in enumerate(spool_file):
                 values = json.loads(line)
-                for column, value in zip(connection_specs, values):
+                for column, value in zip(connection_specs, values, strict=False):
                     arrays[column][position] = value
         spool.unlink()
         for name in connection_specs:
             arrays[name].flush()
         _check_peak_rss(max_peak_rss_bytes)
         calendar_by_service = {str(row["service_id"]): row for row in calendars}
-        starts=[]; ends=[]; masks=[]
+        starts = []
+        ends = []
+        masks = []
         for service_id in dictionaries["service"]:
-            rule=calendar_by_service.get(service_id)
+            rule = calendar_by_service.get(service_id)
             if rule:
-                starts.append(rule["start_date"].toordinal()); ends.append(rule["end_date"].toordinal())
-                masks.append(sum((1 << day) for day,name in enumerate(("monday","tuesday","wednesday","thursday","friday","saturday","sunday")) if rule[name]))
+                starts.append(rule["start_date"].toordinal())
+                ends.append(rule["end_date"].toordinal())
+                masks.append(
+                    sum(
+                        (1 << day)
+                        for day, name in enumerate(
+                            (
+                                "monday",
+                                "tuesday",
+                                "wednesday",
+                                "thursday",
+                                "friday",
+                                "saturday",
+                                "sunday",
+                            )
+                        )
+                        if rule[name]
+                    )
+                )
             else:
-                starts.append(0); ends.append(np.iinfo(np.int32).max); masks.append(127)
-        arrays["service_start_ordinal"]=np.asarray(starts,dtype="int32")
-        arrays["service_end_ordinal"]=np.asarray(ends,dtype="int32")
-        exception_rows=[row for row in calendar_dates if str(row["service_id"]) in dictionaries["service"]]
-        exception_rows.sort(key=lambda row:(row["service_date"],str(row["service_id"])))
-        arrays["service_weekday_mask"]=np.asarray(masks,dtype="uint8")
-        arrays["exception_service"]=np.asarray([dictionaries["service"][str(row["service_id"])] for row in exception_rows],dtype=_small_unsigned(max(0,len(dictionaries["service"])-1)))
-        arrays["exception_date_ordinal"]=np.asarray([row["service_date"].toordinal() for row in exception_rows],dtype="int32")
-        arrays["exception_type"]=np.asarray([row["exception_type"] for row in exception_rows],dtype="uint8")
-        window_names=[name for name,_,_ in (("overnight",0,6),("morning_peak",6,10),("midday",10,15),("afternoon_peak",15,19),("evening",19,24))]
-        profiles=[]
+                starts.append(0)
+                ends.append(np.iinfo(np.int32).max)
+                masks.append(127)
+        arrays["service_start_ordinal"] = np.asarray(starts, dtype="int32")
+        arrays["service_end_ordinal"] = np.asarray(ends, dtype="int32")
+        exception_rows = [
+            row
+            for row in calendar_dates
+            if str(row["service_id"]) in dictionaries["service"]
+        ]
+        exception_rows.sort(
+            key=lambda row: (row["service_date"], str(row["service_id"]))
+        )
+        arrays["service_weekday_mask"] = np.asarray(masks, dtype="uint8")
+        arrays["exception_service"] = np.asarray(
+            [dictionaries["service"][str(row["service_id"])] for row in exception_rows],
+            dtype=_small_unsigned(max(0, len(dictionaries["service"]) - 1)),
+        )
+        arrays["exception_date_ordinal"] = np.asarray(
+            [row["service_date"].toordinal() for row in exception_rows], dtype="int32"
+        )
+        arrays["exception_type"] = np.asarray(
+            [row["exception_type"] for row in exception_rows], dtype="uint8"
+        )
+        window_names = [
+            name
+            for name, _, _ in (
+                ("overnight", 0, 6),
+                ("morning_peak", 6, 10),
+                ("midday", 10, 15),
+                ("afternoon_peak", 15, 19),
+                ("evening", 19, 24),
+            )
+        ]
+        profiles = []
         for row in reliability_profiles:
-            route=dictionaries["route"].get(str(row.get("route_id")))
+            route = dictionaries["route"].get(str(row.get("route_id")))
             if route is None or row.get("time_window") not in window_names:
                 continue
-            profiles.append((route, -1 if row.get("direction_id") is None else int(row["direction_id"]), window_names.index(row["time_window"]), float(row["reliability_probability"]), int(row["sample_count"])))
-        arrays["profile_route"]=np.asarray([p[0] for p in profiles],dtype="uint32")
-        arrays["profile_direction"]=np.asarray([p[1] for p in profiles],dtype="int8")
-        arrays["profile_window"]=np.asarray([p[2] for p in profiles],dtype="uint8")
-        arrays["profile_probability"]=np.asarray([p[3] for p in profiles],dtype="float32")
-        arrays["profile_samples"]=np.asarray([p[4] for p in profiles],dtype="uint32")
+            profiles.append(
+                (
+                    route,
+                    -1 if row.get("direction_id") is None else int(row["direction_id"]),
+                    window_names.index(row["time_window"]),
+                    float(row["reliability_probability"]),
+                    int(row["sample_count"]),
+                )
+            )
+        arrays["profile_route"] = np.asarray([p[0] for p in profiles], dtype="uint32")
+        arrays["profile_direction"] = np.asarray([p[1] for p in profiles], dtype="int8")
+        arrays["profile_window"] = np.asarray([p[2] for p in profiles], dtype="uint8")
+        arrays["profile_probability"] = np.asarray(
+            [p[3] for p in profiles], dtype="float32"
+        )
+        arrays["profile_samples"] = np.asarray([p[4] for p in profiles], dtype="uint32")
         fallback_profiles = list(reliability_fallback_profiles)
         arrays["profile_fallback_level"] = _strings(
-            row["profile_level"] for row in fallback_profiles)
+            row["profile_level"] for row in fallback_profiles
+        )
         arrays["profile_fallback_route"] = _strings(
-            row.get("route_key", "*") for row in fallback_profiles)
+            row.get("route_key", "*") for row in fallback_profiles
+        )
         arrays["profile_fallback_direction"] = np.asarray(
             [int(row.get("direction_key", -1)) for row in fallback_profiles],
-            dtype="int32")
+            dtype="int32",
+        )
         arrays["profile_fallback_probability"] = np.asarray(
             [float(row["reliability_probability"]) for row in fallback_profiles],
-            dtype="float32")
+            dtype="float32",
+        )
         arrays["profile_fallback_on_time"] = np.asarray(
             [float(row["on_time_probability"]) for row in fallback_profiles],
-            dtype="float32")
+            dtype="float32",
+        )
         arrays["profile_fallback_samples"] = np.asarray(
-            [int(row["sample_count"]) for row in fallback_profiles], dtype="uint32")
+            [int(row["sample_count"]) for row in fallback_profiles], dtype="uint32"
+        )
         arrays["profile_fallback_service_dates"] = np.asarray(
             [int(row.get("distinct_service_dates", 0)) for row in fallback_profiles],
-            dtype="uint32")
+            dtype="uint32",
+        )
         transfer_rows = list(transfers)
         explicit_pairs = {
-            (str(row["from_stop_id"]), str(row["to_stop_id"]))
-            for row in transfer_rows
+            (str(row["from_stop_id"]), str(row["to_stop_id"])) for row in transfer_rows
         }
         station_members: dict[str, list[str]] = {}
         for row in stop_rows:
             if row.get("parent_station"):
-                station_members.setdefault(str(row["parent_station"]), []).append(str(row["stop_id"]))
+                station_members.setdefault(str(row["parent_station"]), []).append(
+                    str(row["stop_id"])
+                )
         for members in station_members.values():
             for from_id in members:
                 for to_id in members:
                     if from_id != to_id and (from_id, to_id) not in explicit_pairs:
-                        transfer_rows.append({"from_stop_id": from_id, "to_stop_id": to_id,
-                                              "transfer_type": 2,
-                                              "min_transfer_time": intra_station_transfer_seconds})
+                        transfer_rows.append(
+                            {
+                                "from_stop_id": from_id,
+                                "to_stop_id": to_id,
+                                "transfer_type": 2,
+                                "min_transfer_time": intra_station_transfer_seconds,
+                            }
+                        )
         try:
             arrays["transfer_from"] = np.asarray(
-                [stop_map[str(row["from_stop_id"])] for row in transfer_rows], dtype=stop_dtype)
+                [stop_map[str(row["from_stop_id"])] for row in transfer_rows],
+                dtype=stop_dtype,
+            )
             arrays["transfer_to"] = np.asarray(
-                [stop_map[str(row["to_stop_id"])] for row in transfer_rows], dtype=stop_dtype)
+                [stop_map[str(row["to_stop_id"])] for row in transfer_rows],
+                dtype=stop_dtype,
+            )
         except KeyError as exc:
-            raise SnapshotError(f"transfer references unknown stop {exc.args[0]}") from exc
+            raise SnapshotError(
+                f"transfer references unknown stop {exc.args[0]}"
+            ) from exc
         arrays["transfer_type"] = np.asarray(
-            [int(row.get("transfer_type") or 0) for row in transfer_rows], dtype="uint8")
+            [int(row.get("transfer_type") or 0) for row in transfer_rows], dtype="uint8"
+        )
         arrays["transfer_seconds"] = np.asarray(
-            [int(row.get("min_transfer_time") or 0) for row in transfer_rows], dtype="uint32")
+            [int(row.get("min_transfer_time") or 0) for row in transfer_rows],
+            dtype="uint32",
+        )
         transfer_index_dtype = np.dtype(
-            "uint32" if len(transfer_rows) <= np.iinfo(np.uint32).max else "uint64")
+            "uint32" if len(transfer_rows) <= np.iinfo(np.uint32).max else "uint64"
+        )
         arrays["transfer_order"] = np.argsort(
-            arrays["transfer_from"], kind="stable").astype(
-                transfer_index_dtype, copy=False)
+            arrays["transfer_from"], kind="stable"
+        ).astype(transfer_index_dtype, copy=False)
         transfer_counts = np.bincount(
-            arrays["transfer_from"].astype(np.int64), minlength=len(stop_ids))
+            arrays["transfer_from"].astype(np.int64), minlength=len(stop_ids)
+        )
         arrays["transfer_offsets"] = np.concatenate(
-            ([0], np.cumsum(transfer_counts))).astype(transfer_index_dtype)
+            ([0], np.cumsum(transfer_counts))
+        ).astype(transfer_index_dtype)
         same_stop_forbidden = np.zeros(len(stop_ids), dtype="uint8")
         same_stop_minimum = np.zeros(len(stop_ids), dtype="uint32")
-        for edge, (source, target) in enumerate(zip(
-                arrays["transfer_from"], arrays["transfer_to"])):
+        for edge, (source, target) in enumerate(
+            zip(arrays["transfer_from"], arrays["transfer_to"], strict=False)
+        ):
             source_index, target_index = int(source), int(target)
             if source_index != target_index:
                 continue
@@ -384,10 +540,13 @@ def build_snapshot_from_rows(
                 same_stop_forbidden[source_index] = 1
             same_stop_minimum[source_index] = max(
                 int(same_stop_minimum[source_index]),
-                int(arrays["transfer_seconds"][edge]))
+                int(arrays["transfer_seconds"][edge]),
+            )
         arrays["same_stop_transfer_forbidden"] = same_stop_forbidden
         arrays["same_stop_transfer_minimum"] = same_stop_minimum
-        index_dtype = np.dtype("uint32" if count <= np.iinfo(np.uint32).max else "uint64")
+        index_dtype = np.dtype(
+            "uint32" if count <= np.iinfo(np.uint32).max else "uint64"
+        )
         arrays["scan_order"] = np.argsort(
             arrays["departure_seconds"], kind="stable"
         ).astype(index_dtype, copy=False)
@@ -395,8 +554,12 @@ def build_snapshot_from_rows(
         arrays["departure_order"] = np.lexsort(
             (arrays["departure_seconds"], arrays["from_stop"])
         ).astype(index_dtype, copy=False)
-        counts_by_stop = np.bincount(arrays["from_stop"].astype(np.int64), minlength=len(stop_ids))
-        arrays["departure_offsets"] = np.concatenate(([0], np.cumsum(counts_by_stop))).astype(index_dtype)
+        counts_by_stop = np.bincount(
+            arrays["from_stop"].astype(np.int64), minlength=len(stop_ids)
+        )
+        arrays["departure_offsets"] = np.concatenate(
+            ([0], np.cumsum(counts_by_stop))
+        ).astype(index_dtype)
         for name, array in arrays.items():
             path = temporary / f"{name}.npy"
             if not path.exists():
@@ -406,19 +569,31 @@ def build_snapshot_from_rows(
         bounded_starts = [value for value in starts if value > 0]
         bounded_ends = [value for value in ends if value < np.iinfo(np.int32).max]
         added_dates = [
-            row["service_date"].toordinal() for row in exception_rows
+            row["service_date"].toordinal()
+            for row in exception_rows
             if int(row["exception_type"]) == 1
         ]
-        earliest = min(bounded_starts + added_dates) if bounded_starts or added_dates else None
-        latest = max(bounded_ends + added_dates) if bounded_ends or added_dates else None
+        earliest = (
+            min(bounded_starts + added_dates) if bounded_starts or added_dates else None
+        )
+        latest = (
+            max(bounded_ends + added_dates) if bounded_ends or added_dates else None
+        )
         manifest = {
             "format_version": FORMAT_VERSION,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "source_version": source_version,
             "compatibility": {"minimum_loader_version": 2},
-            "counts": {"stops": len(stop_ids), "routes": len(dictionaries["route"]),
-                       "trips": len(dictionaries["trip"]), "connections": count},
-            "arrays": {name: {"shape": list(array.shape), "dtype": str(array.dtype)} for name, array in arrays.items()},
+            "counts": {
+                "stops": len(stop_ids),
+                "routes": len(dictionaries["route"]),
+                "trips": len(dictionaries["trip"]),
+                "connections": count,
+            },
+            "arrays": {
+                name: {"shape": list(array.shape), "dtype": str(array.dtype)}
+                for name, array in arrays.items()
+            },
             "build": {
                 "duration_seconds": perf_counter() - started,
                 "size_bytes": array_size,
@@ -426,11 +601,15 @@ def build_snapshot_from_rows(
             },
             "geographic_heuristic": _geographic_heuristic_metadata(arrays),
             "service_range": {
-                "earliest_date": date.fromordinal(earliest).isoformat() if earliest else None,
+                "earliest_date": date.fromordinal(earliest).isoformat()
+                if earliest
+                else None,
                 "latest_date": date.fromordinal(latest).isoformat() if latest else None,
             },
         }
-        (temporary / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        (temporary / "manifest.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
         # Windows cannot rename a directory containing open mmap handles.
         _close_mmaps(arrays)
         backup = output.with_name(f".{output.name}.old-{os.getpid()}")
@@ -459,23 +638,32 @@ class RoutingSnapshot:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         try:
-            self.manifest = json.loads((self.path / "manifest.json").read_text(encoding="utf-8"))
+            self.manifest = json.loads(
+                (self.path / "manifest.json").read_text(encoding="utf-8")
+            )
         except Exception as exc:
             raise SnapshotError("snapshot manifest is missing or invalid") from exc
         if self.manifest.get("format_version") not in SUPPORTED_FORMAT_VERSIONS:
-            raise SnapshotError(f"unsupported snapshot format {self.manifest.get('format_version')!r}")
+            raise SnapshotError(
+                f"unsupported snapshot format {self.manifest.get('format_version')!r}"
+            )
         declared = set(self.manifest.get("arrays", {}))
         required = REQUIRED_ARRAYS | (
             FALLBACK_PROFILE_ARRAYS
-            if self.manifest.get("format_version") == FORMAT_VERSION else set()
+            if self.manifest.get("format_version") == FORMAT_VERSION
+            else set()
         )
         missing = required - declared
         if missing:
-            raise SnapshotError(f"snapshot is missing arrays: {', '.join(sorted(missing))}")
+            raise SnapshotError(
+                f"snapshot is missing arrays: {', '.join(sorted(missing))}"
+            )
         self.arrays: dict[str, np.ndarray] = {}
         for name, spec in self.manifest["arrays"].items():
             try:
-                array = np.load(self.path / f"{name}.npy", mmap_mode="r", allow_pickle=False)
+                array = np.load(
+                    self.path / f"{name}.npy", mmap_mode="r", allow_pickle=False
+                )
             except Exception as exc:
                 raise SnapshotError(f"cannot load snapshot array {name}") from exc
             if list(array.shape) != spec["shape"] or str(array.dtype) != spec["dtype"]:
@@ -483,8 +671,17 @@ class RoutingSnapshot:
             array.flags.writeable = False
             self.arrays[name] = array
         n = int(self.manifest["counts"]["connections"])
-        for name in ("from_stop", "to_stop", "departure_seconds", "arrival_seconds",
-                     "trip_index", "route_index", "service_index", "stop_sequence", "direction_id"):
+        for name in (
+            "from_stop",
+            "to_stop",
+            "departure_seconds",
+            "arrival_seconds",
+            "trip_index",
+            "route_index",
+            "service_index",
+            "stop_sequence",
+            "direction_id",
+        ):
             if len(self.arrays[name]) != n:
                 raise SnapshotError(f"snapshot array {name} has invalid length")
         if len(self.arrays["departure_offsets"]) != len(self.arrays["stop_ids"]) + 1:
@@ -492,19 +689,28 @@ class RoutingSnapshot:
         if "transfer_offsets" in self.arrays:
             if len(self.arrays["transfer_offsets"]) != len(self.arrays["stop_ids"]) + 1:
                 raise SnapshotError("invalid transfer offsets")
-            if int(self.arrays["transfer_offsets"][-1]) != len(self.arrays["transfer_from"]):
+            if int(self.arrays["transfer_offsets"][-1]) != len(
+                self.arrays["transfer_from"]
+            ):
                 raise SnapshotError("transfer offsets do not cover transfer records")
-            if (len(self.arrays.get("same_stop_transfer_forbidden", ()))
-                    != len(self.arrays["stop_ids"])
-                    or len(self.arrays.get("same_stop_transfer_minimum", ()))
-                    != len(self.arrays["stop_ids"])):
+            if len(self.arrays.get("same_stop_transfer_forbidden", ())) != len(
+                self.arrays["stop_ids"]
+            ) or len(self.arrays.get("same_stop_transfer_minimum", ())) != len(
+                self.arrays["stop_ids"]
+            ):
                 raise SnapshotError("same-stop transfer index has invalid length")
-        limits = {"from_stop": len(self.arrays["stop_ids"]), "to_stop": len(self.arrays["stop_ids"]),
-                  "trip_index": len(self.arrays["trip_ids"]), "route_index": len(self.arrays["route_ids"]),
-                  "service_index": len(self.arrays["service_ids"])}
+        limits = {
+            "from_stop": len(self.arrays["stop_ids"]),
+            "to_stop": len(self.arrays["stop_ids"]),
+            "trip_index": len(self.arrays["trip_ids"]),
+            "route_index": len(self.arrays["route_ids"]),
+            "service_index": len(self.arrays["service_ids"]),
+        }
         for name, limit in limits.items():
             if len(self.arrays[name]) and int(np.max(self.arrays[name])) >= limit:
-                raise SnapshotError(f"snapshot array {name} contains an out-of-range index")
+                raise SnapshotError(
+                    f"snapshot array {name} contains an out-of-range index"
+                )
         if np.any(self.arrays["arrival_seconds"] < self.arrays["departure_seconds"]):
             raise SnapshotError("snapshot contains invalid connection time ordering")
         declared_heuristic = self.manifest.get("geographic_heuristic")
@@ -516,8 +722,10 @@ class RoutingSnapshot:
         elif declared_heuristic.get("enabled") is not True:
             self.heuristic_metadata = {
                 "enabled": False,
-                "reason": str(declared_heuristic.get("reason") or
-                              "snapshot geographic heuristic is disabled"),
+                "reason": str(
+                    declared_heuristic.get("reason")
+                    or "snapshot geographic heuristic is disabled"
+                ),
             }
         else:
             validated = _geographic_heuristic_metadata(self.arrays)
@@ -525,14 +733,18 @@ class RoutingSnapshot:
                 declared_speed = float(declared_heuristic["maximum_speed_mps"])
             except (KeyError, TypeError, ValueError):
                 declared_speed = 0.0
-            if (not validated.get("enabled")
-                    or not math.isfinite(declared_speed)
-                    or declared_speed < float(validated.get("maximum_speed_mps", math.inf))):
+            if (
+                not validated.get("enabled")
+                or not math.isfinite(declared_speed)
+                or declared_speed < float(validated.get("maximum_speed_mps", math.inf))
+            ):
                 self.heuristic_metadata = {
                     "enabled": False,
-                    "reason": (str(validated.get("reason"))
-                               if not validated.get("enabled")
-                               else "snapshot geographic heuristic speed bound is invalid"),
+                    "reason": (
+                        str(validated.get("reason"))
+                        if not validated.get("enabled")
+                        else "snapshot geographic heuristic speed bound is invalid"
+                    ),
                 }
             else:
                 self.heuristic_metadata = dict(declared_heuristic)
@@ -548,7 +760,11 @@ class RoutingSnapshot:
     def find_stop(self, stop_id: str) -> Stop | None:
         ordered = self.arrays["stop_ids"][self._stop_id_order]
         position = int(np.searchsorted(ordered, stop_id))
-        index = int(self._stop_id_order[position]) if position < len(ordered) and str(ordered[position]) == stop_id else None
+        index = (
+            int(self._stop_id_order[position])
+            if position < len(ordered) and str(ordered[position]) == stop_id
+            else None
+        )
         return self.stop(index) if index is not None else None
 
     def stop_index(self, stop_id: str) -> int:
@@ -561,15 +777,27 @@ class RoutingSnapshot:
     def stop(self, index: int) -> Stop:
         a = self.arrays
         lat, lon = float(a["stop_lat"][index]), float(a["stop_lon"][index])
-        return Stop(str(a["stop_ids"][index]), str(a["stop_names"][index]),
-                    str(a["stop_codes"][index]) or None,
-                    None if math.isnan(lat) else lat, None if math.isnan(lon) else lon)
+        return Stop(
+            str(a["stop_ids"][index]),
+            str(a["stop_names"][index]),
+            str(a["stop_codes"][index]) or None,
+            None if math.isnan(lat) else lat,
+            None if math.isnan(lon) else lon,
+        )
 
     def search_stops(self, query: str, limit: int = 20) -> list[Stop]:
         needle = query.casefold()
-        matches = [i for i, name in enumerate(self.arrays["stop_names"])
-                   if needle in str(name).casefold()]
-        matches.sort(key=lambda i: (str(self.arrays["stop_names"][i]), str(self.arrays["stop_ids"][i])))
+        matches = [
+            i
+            for i, name in enumerate(self.arrays["stop_names"])
+            if needle in str(name).casefold()
+        ]
+        matches.sort(
+            key=lambda i: (
+                str(self.arrays["stop_names"][i]),
+                str(self.arrays["stop_ids"][i]),
+            )
+        )
         return [self.stop(i) for i in matches[:limit]]
 
 
@@ -590,16 +818,24 @@ class SnapshotStopCatalog:
             )
             declared = self.manifest["arrays"]
             self.arrays = {
-                name: np.load(self.path / f"{name}.npy", mmap_mode="r", allow_pickle=False)
+                name: np.load(
+                    self.path / f"{name}.npy", mmap_mode="r", allow_pickle=False
+                )
                 for name in self.REQUIRED
             }
         except Exception as exc:
             raise SnapshotError("snapshot stop catalog is missing or invalid") from exc
         for name, array in self.arrays.items():
             spec = declared.get(name)
-            if spec is None or list(array.shape) != spec.get("shape") or str(array.dtype) != spec.get("dtype"):
+            if (
+                spec is None
+                or list(array.shape) != spec.get("shape")
+                or str(array.dtype) != spec.get("dtype")
+            ):
                 self.close()
-                raise SnapshotError(f"snapshot stop array {name} does not match manifest")
+                raise SnapshotError(
+                    f"snapshot stop array {name} does not match manifest"
+                )
             array.flags.writeable = False
         lengths = {len(array) for array in self.arrays.values()}
         if len(lengths) != 1:
@@ -617,10 +853,13 @@ class SnapshotStopCatalog:
     def stop(self, index: int) -> Stop:
         a = self.arrays
         lat, lon = float(a["stop_lat"][index]), float(a["stop_lon"][index])
-        return Stop(str(a["stop_ids"][index]), str(a["stop_names"][index]),
-                    str(a["stop_codes"][index]) or None,
-                    None if math.isnan(lat) else lat,
-                    None if math.isnan(lon) else lon)
+        return Stop(
+            str(a["stop_ids"][index]),
+            str(a["stop_names"][index]),
+            str(a["stop_codes"][index]) or None,
+            None if math.isnan(lat) else lat,
+            None if math.isnan(lon) else lon,
+        )
 
     def find_stop(self, stop_id: str) -> Stop | None:
         ordered = self.arrays["stop_ids"][self._stop_id_order]
@@ -631,10 +870,17 @@ class SnapshotStopCatalog:
 
     def search_stops(self, query: str, limit: int = 20) -> list[Stop]:
         needle = query.casefold()
-        matches = [i for i, name in enumerate(self.arrays["stop_names"])
-                   if needle in str(name).casefold()]
-        matches.sort(key=lambda i: (str(self.arrays["stop_names"][i]),
-                                    str(self.arrays["stop_ids"][i])))
+        matches = [
+            i
+            for i, name in enumerate(self.arrays["stop_names"])
+            if needle in str(name).casefold()
+        ]
+        matches.sort(
+            key=lambda i: (
+                str(self.arrays["stop_names"][i]),
+                str(self.arrays["stop_ids"][i]),
+            )
+        )
         return [self.stop(i) for i in matches[:limit]]
 
 
@@ -649,8 +895,11 @@ class SnapshotPlanner:
         """Ignore internal trip-instance IDs when the useful journey is equal."""
         return tuple(
             (
-                leg.route_id, leg.origin.stop_id, leg.destination.stop_id,
-                leg.departure_time, leg.arrival_time,
+                leg.route_id,
+                leg.origin.stop_id,
+                leg.destination.stop_id,
+                leg.departure_time,
+                leg.arrival_time,
             )
             for leg in alternative.itinerary.legs
         )
@@ -667,8 +916,7 @@ class SnapshotPlanner:
                 other is not candidate
                 and other.itinerary.arrival_time <= candidate.itinerary.arrival_time
                 and other.reliability_cost <= candidate.reliability_cost
-                and other.itinerary.transfer_count
-                <= candidate.itinerary.transfer_count
+                and other.itinerary.transfer_count <= candidate.itinerary.transfer_count
                 and (
                     other.itinerary.arrival_time < candidate.itinerary.arrival_time
                     or other.reliability_cost < candidate.reliability_cost
@@ -679,30 +927,49 @@ class SnapshotPlanner:
             )
         ]
 
-    def get_ranked_route_result(self, origin_stop_id: str, destination_stop_id: str,
-                                service_date: date, departure_time: timedelta, resolver=None,
-                                *, route_number=MAX_ALTERNATIVES, preferences=None,
-                                algorithm="astar", include_alternatives=False,
-                                include_diagnostics=False, **_: Any) -> ReliableSearchResult:
+    def get_ranked_route_result(
+        self,
+        origin_stop_id: str,
+        destination_stop_id: str,
+        service_date: date,
+        departure_time: timedelta,
+        resolver=None,
+        *,
+        route_number=MAX_ALTERNATIVES,
+        preferences=None,
+        algorithm="astar",
+        include_alternatives=False,
+        include_diagnostics=False,
+        **_: Any,
+    ) -> ReliableSearchResult:
         requested_algorithm = str(algorithm).strip().lower()
         if requested_algorithm == "baseline":
             requested_algorithm = "dijkstra"
         if requested_algorithm not in {"dijkstra", "astar"}:
             raise ValueError("snapshot routing algorithm must be 'dijkstra' or 'astar'")
-        started = perf_counter(); a = self.snapshot.arrays
-        origin = self.snapshot.stop_index(origin_stop_id); destination = self.snapshot.stop_index(destination_stop_id)
+        started = perf_counter()
+        a = self.snapshot.arrays
+        origin = self.snapshot.stop_index(origin_stop_id)
+        destination = self.snapshot.stop_index(destination_stop_id)
         departure_seconds = max(0, int(departure_time.total_seconds()))
-        route_limit = min(
-            MAX_ALTERNATIVES, max(1, int(route_number))
-        ) if include_alternatives else 1
+        route_limit = (
+            min(MAX_ALTERNATIVES, max(1, int(route_number)))
+            if include_alternatives
+            else 1
+        )
         labels, winners, stats = snapshot_search(
-            a, origin, destination, departure_seconds, service_date,
+            a,
+            origin,
+            destination,
+            departure_seconds,
+            service_date,
             algorithm=requested_algorithm,
             max_transfers=int(_.get("max_transfers", 3)),
             search_horizon_seconds=int(_.get("search_horizon_minutes", 180)) * 60,
             max_extra_seconds=int(_.get("max_extra_minutes", 30)) * 60,
-            candidate_limit=(int(_.get("max_candidates", 10_000))
-                             if include_alternatives else 1),
+            candidate_limit=(
+                int(_.get("max_candidates", 10_000)) if include_alternatives else 1
+            ),
             max_labels=int(_.get("max_labels", 250_000)),
             timeout_seconds=float(_.get("timeout_seconds", 30.0)),
             collect_alternatives=include_alternatives,
@@ -717,85 +984,188 @@ class SnapshotPlanner:
         if stats.resource_limit_reached:
             raise ReliableSearchTimeout(
                 f"snapshot search reached resource limit: {stats.termination_reason}",
-                log_context={"algorithm": requested_algorithm,
-                             "resource_limit": stats.termination_reason,
-                             "candidate_truncated": stats.candidate_truncated},
+                log_context={
+                    "algorithm": requested_algorithm,
+                    "resource_limit": stats.termination_reason,
+                    "candidate_truncated": stats.candidate_truncated,
+                },
             )
         materialized: list[ReliableAlternative] = []
         identities: set[tuple] = set()
         for winner in winners:
             path = connection_path(labels, winner)
-            validate_label_path(a, labels, winner, origin, destination,
-                                departure_seconds)
-            legs=[]; selections=[]; pos=0
+            validate_label_path(
+                a, labels, winner, origin, destination, departure_seconds
+            )
+            legs = []
+            selections = []
+            pos = 0
             while pos < len(path):
-                first=path[pos]; trip=int(a["trip_index"][first]); end=pos
-                while end+1 < len(path) and int(a["trip_index"][path[end+1]]) == trip: end += 1
-                segment=path[pos:end+1]; f,l=segment[0],segment[-1]
-                stops=[LegStop(self.snapshot.stop(int(a["from_stop"][f])), int(a["stop_sequence"][f]), None,
-                               timedelta(seconds=int(a["departure_seconds"][f])))]
+                first = path[pos]
+                trip = int(a["trip_index"][first])
+                end = pos
+                while (
+                    end + 1 < len(path) and int(a["trip_index"][path[end + 1]]) == trip
+                ):
+                    end += 1
+                segment = path[pos : end + 1]
+                first_connection, last_connection = segment[0], segment[-1]
+                stops = [
+                    LegStop(
+                        self.snapshot.stop(int(a["from_stop"][first_connection])),
+                        int(a["stop_sequence"][first_connection]),
+                        None,
+                        timedelta(
+                            seconds=int(a["departure_seconds"][first_connection])
+                        ),
+                    )
+                ]
                 for item in segment:
-                    stops.append(LegStop(self.snapshot.stop(int(a["to_stop"][item])), int(a["stop_sequence"][item])+1,
-                                         timedelta(seconds=int(a["arrival_seconds"][item])), None))
-                route=int(a["route_index"][f]); direction=int(a["direction_id"][f]); direction_value=None if direction < 0 else direction
-                legs.append(RouteLeg(str(a["trip_ids"][trip]), str(a["route_ids"][route]), str(a["route_names"][route]),
-                                     stops[0].stop, stops[-1].stop, timedelta(seconds=int(a["departure_seconds"][f])),
-                                     timedelta(seconds=int(a["arrival_seconds"][l])), direction_value, tuple(stops)))
-                window=time_window(timedelta(seconds=int(a["departure_seconds"][f])))
-                selection = resolver.resolve(str(a["route_ids"][route]), direction_value, window) if resolver else self._profile(route,direction_value,window,int(_.get("minimum_samples",20)))
-                selections.append(selection); pos=end+1
+                    stops.append(
+                        LegStop(
+                            self.snapshot.stop(int(a["to_stop"][item])),
+                            int(a["stop_sequence"][item]) + 1,
+                            timedelta(seconds=int(a["arrival_seconds"][item])),
+                            None,
+                        )
+                    )
+                route = int(a["route_index"][first_connection])
+                direction = int(a["direction_id"][first_connection])
+                direction_value = None if direction < 0 else direction
+                legs.append(
+                    RouteLeg(
+                        str(a["trip_ids"][trip]),
+                        str(a["route_ids"][route]),
+                        str(a["route_names"][route]),
+                        stops[0].stop,
+                        stops[-1].stop,
+                        timedelta(
+                            seconds=int(a["departure_seconds"][first_connection])
+                        ),
+                        timedelta(seconds=int(a["arrival_seconds"][last_connection])),
+                        direction_value,
+                        tuple(stops),
+                    )
+                )
+                window = time_window(
+                    timedelta(seconds=int(a["departure_seconds"][first_connection]))
+                )
+                selection = (
+                    resolver.resolve(
+                        str(a["route_ids"][route]), direction_value, window
+                    )
+                    if resolver
+                    else self._profile(
+                        route,
+                        direction_value,
+                        window,
+                        int(_.get("minimum_samples", 20)),
+                    )
+                )
+                selections.append(selection)
+                pos = end + 1
             # Missing profiles use an explicit conservative fallback. They are
             # never silently treated as perfectly reliable.
-            probability=1.0
+            probability = 1.0
             for selection in selections:
-                probability *= float(selection.profile.reliability_probability) if selection.profile else 0.0
+                probability *= (
+                    float(selection.profile.reliability_probability)
+                    if selection.profile
+                    else 0.0
+                )
             probability = max(probability, 1e-9)
-            itinerary=Itinerary(self.snapshot.stop(origin), self.snapshot.stop(destination), service_date,
-                                departure_time, timedelta(seconds=labels[winner].arrival), tuple(legs))
+            itinerary = Itinerary(
+                self.snapshot.stop(origin),
+                self.snapshot.stop(destination),
+                service_date,
+                departure_time,
+                timedelta(seconds=labels[winner].arrival),
+                tuple(legs),
+            )
             alternative = ReliableAlternative(
-                itinerary, probability, -math.log(probability),
-                tuple(selections))
+                itinerary, probability, -math.log(probability), tuple(selections)
+            )
             identity = self._semantic_identity(alternative)
             if identity in identities:
                 continue
             identities.add(identity)
             materialized.append(alternative)
         alternatives = tuple(self._pareto_survivors(materialized))
-        search_ms=(perf_counter()-started)*1000
-        diagnostics = SearchDiagnostics(SearchDiagnosticTimings(measured_search_ms=search_ms),
-            SearchDiagnosticCounters(
-                algorithm=requested_algorithm, requested_algorithm=str(algorithm),
-                executed_algorithm=requested_algorithm, states_pushed=stats.pushed,
-                states_popped=stats.popped, states_reopened=stats.reopened,
-                labels_created=stats.pushed,
-                transfer_edges_examined=stats.transfers,
-                heuristic_evaluations=stats.heuristics,
-                zero_heuristic_fallbacks=stats.zero_fallbacks,
-                geographic_heuristic_enabled=stats.heuristic_enabled,
-                validated_maximum_speed_mps=stats.maximum_speed_mps,
-                heuristic_fallback_reason=stats.heuristic_fallback_reason,
-                heuristic_cache_hits=stats.heuristic_cache_hits,
-                final_arrival_cost=(labels[winners[0]].arrival if winners else 0),
-                connections_examined=stats.connections,
-                destination_labels_found=len(winners),
-                candidate_itineraries=len(materialized),
-                alternatives_reconstructed=len(alternatives),
-                candidate_truncated=stats.candidate_truncated,
-                candidate_collection_complete=stats.candidate_collection_complete,
-                resource_limit_reached=stats.resource_limit_reached,
-                termination_reason=stats.termination_reason),
-            SearchCacheStatistics(unexpected_queries_during_search=0)) if include_diagnostics else None
-        result=ReliableSearchResult(alternatives, SearchTiming(0,search_ms,0,search_ms),0,diagnostics)
-        return ranked_search_result(result, route_number=route_limit, preferences=preferences)
+        search_ms = (perf_counter() - started) * 1000
+        diagnostics = (
+            SearchDiagnostics(
+                SearchDiagnosticTimings(measured_search_ms=search_ms),
+                SearchDiagnosticCounters(
+                    algorithm=requested_algorithm,
+                    requested_algorithm=str(algorithm),
+                    executed_algorithm=requested_algorithm,
+                    states_pushed=stats.pushed,
+                    states_popped=stats.popped,
+                    states_reopened=stats.reopened,
+                    labels_created=stats.pushed,
+                    transfer_edges_examined=stats.transfers,
+                    heuristic_evaluations=stats.heuristics,
+                    zero_heuristic_fallbacks=stats.zero_fallbacks,
+                    geographic_heuristic_enabled=stats.heuristic_enabled,
+                    validated_maximum_speed_mps=stats.maximum_speed_mps,
+                    heuristic_fallback_reason=stats.heuristic_fallback_reason,
+                    heuristic_cache_hits=stats.heuristic_cache_hits,
+                    final_arrival_cost=(labels[winners[0]].arrival if winners else 0),
+                    connections_examined=stats.connections,
+                    destination_labels_found=len(winners),
+                    candidate_itineraries=len(materialized),
+                    alternatives_reconstructed=len(alternatives),
+                    candidate_truncated=stats.candidate_truncated,
+                    candidate_collection_complete=stats.candidate_collection_complete,
+                    resource_limit_reached=stats.resource_limit_reached,
+                    termination_reason=stats.termination_reason,
+                ),
+                SearchCacheStatistics(unexpected_queries_during_search=0),
+            )
+            if include_diagnostics
+            else None
+        )
+        result = ReliableSearchResult(
+            alternatives, SearchTiming(0, search_ms, 0, search_ms), 0, diagnostics
+        )
+        return ranked_search_result(
+            result, route_number=route_limit, preferences=preferences
+        )
 
-    def _profile(self, route: int, direction: int | None, window: str, minimum_samples: int) -> ProfileSelection:
-        a=self.snapshot.arrays; names=("overnight","morning_peak","midday","afternoon_peak","evening")
-        mask=(a["profile_route"] == route) & (a["profile_window"] == names.index(window)) & (a["profile_direction"] == (-1 if direction is None else direction))
-        matches=np.flatnonzero(mask)
+    def _profile(
+        self, route: int, direction: int | None, window: str, minimum_samples: int
+    ) -> ProfileSelection:
+        a = self.snapshot.arrays
+        names = ("overnight", "morning_peak", "midday", "afternoon_peak", "evening")
+        mask = (
+            (a["profile_route"] == route)
+            & (a["profile_window"] == names.index(window))
+            & (a["profile_direction"] == (-1 if direction is None else direction))
+        )
+        matches = np.flatnonzero(mask)
         profile = None
         if len(matches):
-            i=int(matches[0]); probability=float(a["profile_probability"][i]); samples=int(a["profile_samples"][i])
-            profile=ReliabilityProfile(str(a["route_ids"][route]),None,None,None,samples,0,0,None,0,0,0,probability,1-probability,direction,window,reliability_probability=probability)
+            i = int(matches[0])
+            probability = float(a["profile_probability"][i])
+            samples = int(a["profile_samples"][i])
+            profile = ReliabilityProfile(
+                str(a["route_ids"][route]),
+                None,
+                None,
+                None,
+                samples,
+                0,
+                0,
+                None,
+                0,
+                0,
+                0,
+                probability,
+                1 - probability,
+                direction,
+                window,
+                reliability_probability=probability,
+            )
 
         def fallback(level, route_id, direction_id):
             if "profile_fallback_level" not in a:
@@ -805,15 +1175,20 @@ class SnapshotPlanner:
             selected = np.flatnonzero(
                 (a["profile_fallback_level"] == level)
                 & (a["profile_fallback_route"] == route_key)
-                & (a["profile_fallback_direction"] == direction_key))
+                & (a["profile_fallback_direction"] == direction_key)
+            )
             if not len(selected):
                 return None
             index = int(selected[0])
             return {
-                "reliability_probability": float(a["profile_fallback_probability"][index]),
+                "reliability_probability": float(
+                    a["profile_fallback_probability"][index]
+                ),
                 "on_time_probability": float(a["profile_fallback_on_time"][index]),
                 "sample_count": int(a["profile_fallback_samples"][index]),
-                "distinct_service_dates": int(a["profile_fallback_service_dates"][index]),
+                "distinct_service_dates": int(
+                    a["profile_fallback_service_dates"][index]
+                ),
             }
 
         return select_profile(

@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from sys import getsizeof
-from types import MappingProxyType
-from typing import Mapping
-from typing import Any
-from collections.abc import Collection, Sequence
 from time import perf_counter
+from types import MappingProxyType
+from typing import Any
 
-from .models import Connection
 from .cache import RoutingCacheManager
+from .models import Connection
 
 DEFAULT_FRONTIER_TRIP_BATCH_SIZE = 256
 
@@ -23,8 +22,12 @@ class RequestTripConnectionLoader:
     """Request-local, deduplicating frontier loader for complete trip chains."""
 
     def __init__(
-        self, repository: Any, *, batch_size: int = DEFAULT_FRONTIER_TRIP_BATCH_SIZE,
-        shared_cache: RoutingCacheManager | None = None, gtfs_version: str = "unknown",
+        self,
+        repository: Any,
+        *,
+        batch_size: int = DEFAULT_FRONTIER_TRIP_BATCH_SIZE,
+        shared_cache: RoutingCacheManager | None = None,
+        gtfs_version: str = "unknown",
     ):
         self.repository = repository
         self.batch_size = max(1, batch_size)
@@ -54,7 +57,9 @@ class RequestTripConnectionLoader:
             database_missing: list[str] = []
             for trip_id in missing:
                 before = self.shared_cache.trips.statistics().negative_hits
-                found, cached = self.shared_cache.trips.get((self.gtfs_version, trip_id))
+                found, cached = self.shared_cache.trips.get(
+                    (self.gtfs_version, trip_id)
+                )
                 if found:
                     ordered = tuple(cached or ())
                     self._connections[trip_id] = ordered
@@ -71,8 +76,8 @@ class RequestTripConnectionLoader:
             missing = database_missing
         self.pending_trip_ids.update(missing)
         while missing:
-            batch = missing[:self.batch_size]
-            missing = missing[self.batch_size:]
+            batch = missing[: self.batch_size]
+            missing = missing[self.batch_size :]
             query_started = perf_counter()
             try:
                 rows = self.repository.bulk_trip_connections(
@@ -90,17 +95,21 @@ class RequestTripConnectionLoader:
             for row in rows:
                 grouped[row.trip_id].append(row)
             for trip_id in batch:
-                ordered = tuple(sorted(
-                    grouped.get(trip_id, ()),
-                    key=lambda item: item.from_stop_sequence,
-                ))
+                ordered = tuple(
+                    sorted(
+                        grouped.get(trip_id, ()),
+                        key=lambda item: item.from_stop_sequence,
+                    )
+                )
                 self._connections[trip_id] = ordered
                 if self.shared_cache is not None:
                     self.shared_cache.trips.put(
-                        (self.gtfs_version, trip_id), ordered,
+                        (self.gtfs_version, trip_id),
+                        ordered,
                         ttl_seconds=(
                             self.shared_cache.configuration.negative_trip_ttl_seconds
-                            if not ordered else None
+                            if not ordered
+                            else None
                         ),
                         negative=not ordered,
                     )
@@ -147,7 +156,7 @@ class SearchDataIndex:
         departures: list[Connection],
         connections: list[Connection],
         transfers: list[dict[str, Any]],
-    ) -> "SearchDataIndex":
+    ) -> SearchDataIndex:
         return cls.build_profiled(departures, connections, transfers)[0]
 
     @classmethod
@@ -156,7 +165,7 @@ class SearchDataIndex:
         departures: list[Connection],
         connections: list[Connection],
         transfers: list[dict[str, Any]],
-    ) -> tuple["SearchDataIndex", dict[str, float]]:
+    ) -> tuple[SearchDataIndex, dict[str, float]]:
         grouping_started = perf_counter()
         departure_groups: dict[str, list[Connection]] = defaultdict(list)
         for item in departures:
@@ -171,9 +180,16 @@ class SearchDataIndex:
 
         sorting_started = perf_counter()
         departure_index = {
-            stop_id: tuple(sorted(items, key=lambda item: (
-                item.departure_time, item.trip_id, item.from_stop_sequence
-            )))
+            stop_id: tuple(
+                sorted(
+                    items,
+                    key=lambda item: (
+                        item.departure_time,
+                        item.trip_id,
+                        item.from_stop_sequence,
+                    ),
+                )
+            )
             for stop_id, items in departure_groups.items()
         }
 
@@ -188,22 +204,28 @@ class SearchDataIndex:
         }
         sorting_ms = (perf_counter() - sorting_started) * 1000
         estimate = (
-            getsizeof(departures) + getsizeof(connections) + getsizeof(transfers)
+            getsizeof(departures)
+            + getsizeof(connections)
+            + getsizeof(transfers)
             + sum(getsizeof(item) for item in departures)
             + sum(getsizeof(item) for item in connections)
             + sum(getsizeof(item) for item in transfers)
         )
         index = cls(
             MappingProxyType(departure_index),
-            MappingProxyType({
-                stop_id: tuple(item.departure_time for item in items)
-                for stop_id, items in departure_index.items()
-            }),
+            MappingProxyType(
+                {
+                    stop_id: tuple(item.departure_time for item in items)
+                    for stop_id, items in departure_index.items()
+                }
+            ),
             MappingProxyType(trip_index),
-            MappingProxyType({
-                trip_id: tuple(item.from_stop_sequence for item in items)
-                for trip_id, items in trip_index.items()
-            }),
+            MappingProxyType(
+                {
+                    trip_id: tuple(item.from_stop_sequence for item in items)
+                    for trip_id, items in trip_index.items()
+                }
+            ),
             MappingProxyType(transfer_index),
             estimate,
         )
@@ -214,14 +236,14 @@ class SearchDataIndex:
     ) -> tuple[Connection, ...]:
         items = self.departures_by_stop.get(stop_id, ())
         times = self.departure_times_by_stop.get(stop_id, ())
-        return items[bisect_left(times, earliest):bisect_right(times, latest)]
+        return items[bisect_left(times, earliest) : bisect_right(times, latest)]
 
     def trip_connections(
         self, trip_id: str, from_stop_sequence: int
     ) -> tuple[Connection, ...]:
         items = self.connections_by_trip.get(trip_id, ())
         sequences = self.connection_sequences_by_trip.get(trip_id, ())
-        return items[bisect_left(sequences, from_stop_sequence):]
+        return items[bisect_left(sequences, from_stop_sequence) :]
 
     def transfers(self, stop_id: str) -> tuple[Mapping[str, Any], ...]:
         return self.transfers_by_stop.get(stop_id, ())

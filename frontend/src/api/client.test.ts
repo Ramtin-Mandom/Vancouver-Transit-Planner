@@ -12,18 +12,18 @@ describe("API client", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
     await expect(checkReady()).resolves.toMatchObject({ ready: true });
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://127.0.0.1:8000/ready",
-      { signal: undefined }
-    );
+    expect(fetchMock).toHaveBeenCalledWith("http://127.0.0.1:8000/ready", { signal: undefined });
   });
 
   it("reports an unavailable readiness response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: false,
-      status: 503,
-      json: async () => ({ detail: "GTFS feed expired" })
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 503,
+        json: async () => ({ detail: "GTFS feed expired" })
+      })
+    );
     await expect(checkReady()).rejects.toThrow("GTFS feed expired");
   });
   it("constructs an encoded stop-search request", async () => {
@@ -71,7 +71,9 @@ describe("API client", () => {
         ok: false,
         status: 422,
         json: async () => ({
-          detail: [{ loc: ["body", "include_alternatives"], msg: "Input should be a valid boolean" }]
+          detail: [
+            { loc: ["body", "include_alternatives"], msg: "Input should be a valid boolean" }
+          ]
         })
       })
     );

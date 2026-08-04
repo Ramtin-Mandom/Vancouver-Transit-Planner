@@ -26,9 +26,7 @@ def test_clean_file_removes_orphan_but_preserves_optional_blank(tmp_path):
         ("route_do",),
     )
 
-    result, _ = clean_file(
-        path, spec, {"routes": {"present"}}, dry_run=False
-    )
+    result, _ = clean_file(path, spec, {"routes": {"present"}}, dry_run=False)
 
     assert result.kept == 1
     assert result.removed == 1

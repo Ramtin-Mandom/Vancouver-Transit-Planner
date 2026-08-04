@@ -8,6 +8,8 @@ it("renders planning loading state", () => {
 });
 
 it("renders a safe API error", () => {
-  render(<PlanningStatus loading={false} error="The transit database is temporarily unavailable." />);
+  render(
+    <PlanningStatus loading={false} error="The transit database is temporarily unavailable." />
+  );
   expect(screen.getByRole("alert")).toHaveTextContent("temporarily unavailable");
 });

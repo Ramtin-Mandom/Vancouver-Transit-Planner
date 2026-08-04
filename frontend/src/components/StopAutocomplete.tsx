@@ -1,12 +1,6 @@
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type KeyboardEvent
-} from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { LoaderCircle, MapPin, Search, X } from "lucide-react";
-import { searchStops } from "../api/client";
+import { ApiError, searchStops } from "../api/client";
 import type { Stop } from "../api/types";
 
 interface Props {
@@ -16,6 +10,7 @@ interface Props {
   value: Stop | null;
   onChange: (stop: Stop | null) => void;
   error?: string;
+  apiAvailable?: boolean;
 }
 
 export function StopAutocomplete({
@@ -24,7 +19,8 @@ export function StopAutocomplete({
   placeholder,
   value,
   onChange,
-  error
+  error,
+  apiAvailable = true
 }: Props) {
   const listboxId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -34,6 +30,9 @@ export function StopAutocomplete({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
+  const [searchState, setSearchState] = useState<
+    "idle" | "loading" | "empty" | "error" | "unavailable"
+  >("idle");
 
   useEffect(() => {
     setText(value?.stop_name ?? "");
@@ -52,22 +51,36 @@ export function StopAutocomplete({
     if (value || query.length < 2) {
       setResults([]);
       setLoading(false);
+      setSearchState("idle");
       return;
     }
     const controller = new AbortController();
     const currentRequest = ++requestId.current;
     const timeout = window.setTimeout(async () => {
       setLoading(true);
+      setSearchState(apiAvailable ? "loading" : "unavailable");
       setOpen(true);
+      if (!apiAvailable) {
+        setLoading(false);
+        return;
+      }
       try {
         const stops = await searchStops(query, 10, controller.signal);
         if (currentRequest === requestId.current) {
           setResults(stops);
+          setSearchState(stops.length === 0 ? "empty" : "idle");
           setActiveIndex(-1);
         }
       } catch (searchError) {
         if (!(searchError instanceof DOMException && searchError.name === "AbortError")) {
-          if (currentRequest === requestId.current) setResults([]);
+          if (currentRequest === requestId.current) {
+            setResults([]);
+            setSearchState(
+              searchError instanceof ApiError && searchError.kind === "planner_not_ready"
+                ? "unavailable"
+                : "error"
+            );
+          }
         }
       } finally {
         if (currentRequest === requestId.current) setLoading(false);
@@ -77,7 +90,7 @@ export function StopAutocomplete({
       window.clearTimeout(timeout);
       controller.abort();
     };
-  }, [text, value]);
+  }, [apiAvailable, text, value]);
 
   const select = (stop: Stop) => {
     onChange(stop);
@@ -116,9 +129,7 @@ export function StopAutocomplete({
           aria-autocomplete="list"
           aria-expanded={open}
           aria-controls={listboxId}
-          aria-activedescendant={
-            activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined
-          }
+          aria-activedescendant={activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
           aria-invalid={Boolean(error)}
           aria-describedby={error ? `${id}-error` : undefined}
           autoComplete="off"
@@ -150,15 +161,22 @@ export function StopAutocomplete({
           </button>
         )}
       </div>
-      {error && <small className="fieldError" id={`${id}-error`}>{error}</small>}
+      {error && (
+        <small className="fieldError" id={`${id}-error`}>
+          {error}
+        </small>
+      )}
       {open && !value && (
         <div className="autocompleteMenu">
           <ul id={listboxId} role="listbox" aria-label={`${label} suggestions`}>
             {!loading && results.length === 0 && (
               <li className="emptyOption">
-                {text.trim().length < 2
-                  ? "Type at least 2 characters"
-                  : "No matching stops found"}
+                {text.trim().length < 2 && "Type at least 2 characters"}
+                {text.trim().length >= 2 && searchState === "empty" && "No matching stops found"}
+                {searchState === "error" &&
+                  "Stop search failed. Check your connection and try again."}
+                {searchState === "unavailable" && "Planner is currently unavailable."}
+                {searchState === "loading" && "Searching stops…"}
               </li>
             )}
             {results.map((stop, index) => (

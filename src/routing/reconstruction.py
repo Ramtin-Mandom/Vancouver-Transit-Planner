@@ -49,11 +49,7 @@ def build_leg_stops(
                 arrival_time=(
                     connection.from_arrival_time
                     if connection.from_arrival_time is not None
-                    else (
-                        connections[index - 1].arrival_time
-                        if index > 0
-                        else None
-                    )
+                    else (connections[index - 1].arrival_time if index > 0 else None)
                 ),
                 departure_time=connection.departure_time,
             )

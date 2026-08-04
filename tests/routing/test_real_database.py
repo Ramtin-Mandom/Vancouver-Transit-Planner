@@ -59,9 +59,7 @@ def real_results(real_database, real_planner):
         real_planner,
         limit=10,
         initialization_seconds=real_database._integration_initialization_seconds,
-        structure_construction_seconds=(
-            real_planner._integration_construction_seconds
-        ),
+        structure_construction_seconds=(real_planner._integration_construction_seconds),
     )
     assert summary.executed == 10
     assert summary.failed == 0
@@ -120,9 +118,7 @@ def test_real_gtfs_no_available_route(real_planner, real_results):
 
 
 @requires_database
-def test_real_gtfs_different_service_date(
-    real_database, real_planner, real_results
-):
+def test_real_gtfs_different_service_date(real_database, real_planner, real_results):
     case = real_results[0].case
     next_date = real_database.next_operating_date_for_trip(
         case.source_trip_id, case.service_date

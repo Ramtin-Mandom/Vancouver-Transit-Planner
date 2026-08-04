@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from time import perf_counter
 from math import sqrt
+from time import perf_counter
 
-from .models import AggregationSummary
 from .classification import classify_delay
+from .models import AggregationSummary
 from .policy import DEFAULT_MINIMUM_SAMPLES
 
 

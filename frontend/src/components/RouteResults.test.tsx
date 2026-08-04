@@ -1,6 +1,6 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { routeResult } from "../test/fixtures";
 import { RouteResults } from "./RouteResults";
 
@@ -10,12 +10,19 @@ describe("RouteResults", () => {
       ...routeResult.alternatives[1],
       rank: 3,
       legs: routeResult.alternatives[1].legs.map((leg) => ({
-        ...leg, trip_id: `${leg.trip_id}-THIRD`, route_name: "Third route"
+        ...leg,
+        trip_id: `${leg.trip_id}-THIRD`,
+        route_name: "Third route"
       }))
     };
-    render(<RouteResults result={{
-      ...routeResult, alternatives: [...routeResult.alternatives, third]
-    }} />);
+    render(
+      <RouteResults
+        result={{
+          ...routeResult,
+          alternatives: [...routeResult.alternatives, third]
+        }}
+      />
+    );
     expect(screen.getAllByRole("article")).toHaveLength(3);
     expect(screen.getByText("Third route")).toBeVisible();
     expect(screen.getByText(/ranked 3 alternatives/)).toBeVisible();
@@ -57,7 +64,11 @@ describe("RouteResults", () => {
     await userEvent.click(first);
     expect(first).toHaveAttribute("aria-expanded", "true");
     const firstList = screen.getByRole("list", { name: "5 scheduled stops" });
-    expect(within(firstList).getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+    expect(
+      within(firstList)
+        .getAllByRole("listitem")
+        .map((item) => item.textContent)
+    ).toEqual([
       "25:12:00Granville Station",
       "25:20:00Davie Street",
       "25:26:00City Hall",
@@ -88,18 +99,32 @@ describe("RouteResults", () => {
   });
 
   it("renders a helpful no-route state", () => {
-    render(
-      <RouteResults result={{ ...routeResult, alternatives: [] }} />
-    );
+    render(<RouteResults result={{ ...routeResult, alternatives: [] }} />);
     expect(screen.getByText("No scheduled routes found")).toBeVisible();
   });
 
   it("suppresses comparison badges when only one route exists", () => {
-    render(<RouteResults result={{ ...routeResult, alternatives: [routeResult.alternatives[0]] }} />);
+    render(
+      <RouteResults result={{ ...routeResult, alternatives: [routeResult.alternatives[0]] }} />
+    );
     expect(screen.getAllByRole("article")).toHaveLength(1);
     expect(screen.getByText(/ranked 1 alternative\./)).toBeVisible();
     expect(screen.queryByText("Fastest")).not.toBeInTheDocument();
     expect(screen.queryByText("Most reliable")).not.toBeInTheDocument();
     expect(screen.queryByText("Best overall")).not.toBeInTheDocument();
+  });
+
+  it("synchronizes route card selection without changing backend order", async () => {
+    const onSelect = vi.fn();
+    render(<RouteResults result={routeResult} selectedRank={1} onSelect={onSelect} />);
+    const cards = screen.getAllByRole("article");
+    expect(within(cards[0]).getByRole("button", { name: "Shown on map" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+    await userEvent.click(within(cards[1]).getByRole("button", { name: "Show on map" }));
+    expect(onSelect).toHaveBeenCalledWith(2);
+    expect(within(cards[0]).getByText("5 → 99 B-Line")).toBeVisible();
+    expect(within(cards[1]).getByText("14")).toBeVisible();
   });
 });

@@ -5,14 +5,13 @@ from datetime import date
 import pytest
 
 from src.routing.cache import CacheConfiguration, RoutingCacheManager
+from src.routing.database import TransitDatabase
 from src.routing.warmup import (
     RoutingWarmupCoordinator,
     WarmupConfiguration,
     ensure_daily_index,
 )
-from src.routing.database import TransitDatabase
 from tests.routing.test_planner import at, connection
-
 
 TODAY = date(2026, 7, 27)
 
@@ -82,15 +81,19 @@ def test_concurrent_daily_and_skytrain_warmup_are_single_flight():
         shared, repository, object(), WarmupConfiguration(today_index=False)
     )
     with ThreadPoolExecutor(max_workers=6) as executor:
-        list(executor.map(
-            lambda _: ensure_daily_index(shared, repository, "feed-1", TODAY),
-            range(12),
-        ))
+        list(
+            executor.map(
+                lambda _: ensure_daily_index(shared, repository, "feed-1", TODAY),
+                range(12),
+            )
+        )
     assert repository.daily_queries == 1
     with ThreadPoolExecutor(max_workers=6) as executor:
-        list(executor.map(
-            lambda _: coordinator.warm_skytrain("feed-1", TODAY), range(12)
-        ))
+        list(
+            executor.map(
+                lambda _: coordinator.warm_skytrain("feed-1", TODAY), range(12)
+            )
+        )
     assert repository.trip_queries == 1
 
 
@@ -120,7 +123,9 @@ def test_background_warmup_stops_cleanly_before_starting_work():
     repository = WarmupRepository()
     shared = cache()
     coordinator = RoutingWarmupCoordinator(
-        shared, repository, object(),
+        shared,
+        repository,
+        object(),
         WarmupConfiguration(today_index=False, tomorrow_index=True),
     )
     coordinator.warm_essential(TODAY)

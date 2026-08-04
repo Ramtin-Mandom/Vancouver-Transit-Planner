@@ -9,6 +9,7 @@ from itertools import count
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, Protocol
 
+from .cache import DEFAULT_ROUTING_CACHE_MODE, RoutingCacheManager
 from .models import (
     Connection,
     Itinerary,
@@ -17,9 +18,8 @@ from .models import (
     RouteLeg,
     Stop,
 )
-from .service_calendar import ServiceCalendar
 from .reconstruction import build_leg_stops, load_connection_stops
-from .cache import DEFAULT_ROUTING_CACHE_MODE, RoutingCacheManager
+from .service_calendar import ServiceCalendar
 
 if TYPE_CHECKING:
     from .route_results import RoutingPreferences
@@ -60,7 +60,9 @@ class _Walk:
 
 class TransitPlanner:
     def __init__(
-        self, database: RoutingRepository, calendar: ServiceCalendar | None = None,
+        self,
+        database: RoutingRepository,
+        calendar: ServiceCalendar | None = None,
         cache_manager: RoutingCacheManager | None = None,
     ) -> None:
         self.database = database
@@ -85,9 +87,7 @@ class TransitPlanner:
                 origin, destination, service_date, departure_time, departure_time, ()
             )
 
-        active_service_lookup = getattr(
-            self.database, "active_service_ids", None
-        )
+        active_service_lookup = getattr(self.database, "active_service_ids", None)
         active_service_ids = (
             active_service_lookup(service_date)
             if callable(active_service_lookup)
@@ -117,9 +117,7 @@ class TransitPlanner:
                 queue,
                 sequence,
             )
-            self._relax_transfers(
-                stop_id, reached_at, best, previous, queue, sequence
-            )
+            self._relax_transfers(stop_id, reached_at, best, previous, queue, sequence)
 
         if destination_stop_id not in best:
             return None
@@ -149,7 +147,9 @@ class TransitPlanner:
         router and produces non-cyclic alternatives without changing plan().
         """
         if limit < 1 or max_extra_minutes < 0:
-            raise ValueError("candidate limit must be positive and extra time nonnegative")
+            raise ValueError(
+                "candidate limit must be positive and extra time nonnegative"
+            )
         candidates: list[Itinerary] = []
         identifiers: set[tuple[tuple[str, str, str], ...]] = set()
         search_time = departure_time
@@ -224,7 +224,7 @@ class TransitPlanner:
         resolver: Any,
         *,
         route_number: int = 5,
-        preferences: "RoutingPreferences | None" = None,
+        preferences: RoutingPreferences | None = None,
         algorithm: str = "mc_raptor",
         **bounds: Any,
     ) -> list[ReliableAlternative]:
@@ -252,7 +252,7 @@ class TransitPlanner:
         resolver: Any,
         *,
         route_number: int = 5,
-        preferences: "RoutingPreferences | None" = None,
+        preferences: RoutingPreferences | None = None,
         algorithm: str = "mc_raptor",
         **bounds: Any,
     ) -> ReliableSearchResult:
@@ -261,9 +261,9 @@ class TransitPlanner:
         from .route_results import get_ranked_route_result
 
         algorithm = str(algorithm).strip().lower()
-        cache_mode = str(
-            bounds.pop("cache_mode", DEFAULT_ROUTING_CACHE_MODE)
-        ).strip().lower()
+        cache_mode = (
+            str(bounds.pop("cache_mode", DEFAULT_ROUTING_CACHE_MODE)).strip().lower()
+        )
         if cache_mode not in {"request", "shared"}:
             raise ValueError("cache_mode must be 'request' or 'shared'")
         active_cache = self.cache_manager if cache_mode == "shared" else None
@@ -274,18 +274,29 @@ class TransitPlanner:
         version_started = perf_counter()
         gtfs_lookup = getattr(self.database, "gtfs_version", None)
         gtfs_version = str(gtfs_lookup()) if callable(gtfs_lookup) else "unknown"
-        profile_lookup = getattr(getattr(resolver, "database", None), "profile_version", None)
+        profile_lookup = getattr(
+            getattr(resolver, "database", None), "profile_version", None
+        )
         profile_version = (
-            str(profile_lookup()) if callable(profile_lookup)
+            str(profile_lookup())
+            if callable(profile_lookup)
             else str(getattr(resolver, "profile_version", "unknown"))
         )
         version_lookup_ms = (perf_counter() - version_started) * 1000
         response_key = (
-            gtfs_version, profile_version, cache_mode,
-            origin_stop_id, destination_stop_id,
-            service_date, departure_time, algorithm, route_number,
+            gtfs_version,
+            profile_version,
+            cache_mode,
+            origin_stop_id,
+            destination_stop_id,
+            service_date,
+            departure_time,
+            algorithm,
+            route_number,
             include_alternatives,
-            tuple(sorted(vars(preferences).items())) if preferences is not None else None,
+            tuple(sorted(vars(preferences).items()))
+            if preferences is not None
+            else None,
             getattr(resolver, "minimum_samples", None),
             tuple(sorted((name, repr(value)) for name, value in bounds.items())),
         )
@@ -308,22 +319,26 @@ class TransitPlanner:
         # search class still exposes eager mode for controlled comparisons.
         if algorithm in {"baseline", "dijkstra"}:
             search = ParetoTransitSearch(
-                self.database, self.calendar, resolver,
-                cache_manager=active_cache, gtfs_version=gtfs_version,
+                self.database,
+                self.calendar,
+                resolver,
+                cache_manager=active_cache,
+                gtfs_version=gtfs_version,
             )
         elif algorithm == "astar":
             from .astar import AStarParetoTransitSearch
 
             search = AStarParetoTransitSearch(
-                self.database, self.calendar, resolver,
-                cache_manager=active_cache, gtfs_version=gtfs_version,
+                self.database,
+                self.calendar,
+                resolver,
+                cache_manager=active_cache,
+                gtfs_version=gtfs_version,
             )
         elif algorithm == "mc_raptor":
             from .mc_raptor import McRaptorTransitSearch
 
-            search = McRaptorTransitSearch(
-                self.database, self.calendar, resolver
-            )
+            search = McRaptorTransitSearch(self.database, self.calendar, resolver)
         else:
             raise ValueError(
                 "routing algorithm must be 'baseline', 'dijkstra', 'astar', "
@@ -367,9 +382,7 @@ class TransitPlanner:
         sequence: count,
     ) -> None:
         prior = previous.get(stop_id)
-        prior_trip_id = (
-            prior.connection.trip_id if isinstance(prior, _Ride) else None
-        )
+        prior_trip_id = prior.connection.trip_id if isinstance(prior, _Ride) else None
         transfer_rules = self.database.transfers_from(stop_id)
         scanned_trips: set[str] = set()
         batch_size = 64
@@ -388,9 +401,7 @@ class TransitPlanner:
             for first in departures:
                 # Departures are ordered. Once a known destination arrival is
                 # no later than this departure, no later trip can improve it.
-                if first.departure_time >= best.get(
-                    destination_stop_id, timedelta.max
-                ):
+                if first.departure_time >= best.get(destination_stop_id, timedelta.max):
                     destination_reached = True
                     break
                 operates = (
@@ -417,9 +428,7 @@ class TransitPlanner:
                         (rule["min_transfer_time"] or 0 for rule in matching),
                         default=0,
                     )
-                    if first.departure_time < reached_at + timedelta(
-                        seconds=minimum
-                    ):
+                    if first.departure_time < reached_at + timedelta(seconds=minimum):
                         continue
                 # Once boardable, scan only this trip's remaining stops.
                 connections = self.database.trip_connections(

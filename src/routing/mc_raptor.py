@@ -22,10 +22,8 @@ from .models import (
     SearchDiagnostics,
     SearchDiagnosticTimings,
     SearchTiming,
-    Stop,
 )
 from .reconstruction import build_leg_stops, load_connection_stops
-from .route_results import itinerary_identity
 from .reliable import (
     DEFAULT_MAX_TRANSFERS,
     DEFAULT_SEARCH_HORIZON_MINUTES,
@@ -33,6 +31,7 @@ from .reliable import (
     EPSILON,
     ReliableSearchTimeout,
 )
+from .route_results import itinerary_identity
 
 
 @dataclass
@@ -77,8 +76,7 @@ def _dominates(left: _McLabel, right: _McLabel) -> bool:
         and left.reliability_cost <= right.reliability_cost
     )
     return no_worse and (
-        left.arrival < right.arrival
-        or left.reliability_cost < right.reliability_cost
+        left.arrival < right.arrival or left.reliability_cost < right.reliability_cost
     )
 
 
@@ -153,7 +151,9 @@ class McRaptorTransitSearch:
             ended = perf_counter()
             return ReliableSearchResult(
                 (alternative,),
-                SearchTiming((ended - started) * 1000, 0.0, 0.0, (ended - started) * 1000),
+                SearchTiming(
+                    (ended - started) * 1000, 0.0, 0.0, (ended - started) * 1000
+                ),
                 0,
                 diagnostics(),
             )
@@ -174,16 +174,25 @@ class McRaptorTransitSearch:
             bulk_departures = getattr(self.database, "bulk_departures_in_window", None)
             bulk_transfers = getattr(self.database, "bulk_transfers", None)
             bulk_trips = getattr(self.database, "bulk_trip_connections", None)
-            if all(callable(item) for item in (bulk_departures, bulk_transfers, bulk_trips)):
-                departures = bulk_departures(departure_time, horizon, service_ids=active)
+            if all(
+                callable(item) for item in (bulk_departures, bulk_transfers, bulk_trips)
+            ):
+                departures = bulk_departures(
+                    departure_time, horizon, service_ids=active
+                )
                 transfers = bulk_transfers()
                 connections = bulk_trips({item.trip_id for item in departures})
             else:
                 departures = []
                 for stop in getattr(self.database, "stops", {}).values():
-                    departures.extend(self.database.departures_from(
-                        stop.stop_id, departure_time, limit=100000, service_ids=active
-                    ))
+                    departures.extend(
+                        self.database.departures_from(
+                            stop.stop_id,
+                            departure_time,
+                            limit=100000,
+                            service_ids=active,
+                        )
+                    )
                 transfers = [
                     transfer
                     for stop_id in sorted(getattr(self.database, "stops", {}))
@@ -196,7 +205,8 @@ class McRaptorTransitSearch:
                 ]
         if active is None:
             departures = [
-                item for item in departures
+                item
+                for item in departures
                 if self.calendar.operates(item.service_id, service_date)
             ]
         check_deadline()
@@ -240,8 +250,14 @@ class McRaptorTransitSearch:
             nonlocal next_label_id, next_action_id, pruned, fastest_destination
             counters["labels_created"] += 1
             candidate = _McLabel(
-                next_label_id, stop_id, arrival, reliability_cost, round_number,
-                last_trip_id, required_trip_id, parent_id,
+                next_label_id,
+                stop_id,
+                arrival,
+                reliability_cost,
+                round_number,
+                last_trip_id,
+                required_trip_id,
+                parent_id,
                 next_action_id if action is not None else None,
             )
             key = (stop_id, last_trip_id, required_trip_id)
@@ -251,7 +267,8 @@ class McRaptorTransitSearch:
                 _dominates(other, candidate)
                 or (
                     other.arrival == candidate.arrival
-                    and abs(other.reliability_cost - candidate.reliability_cost) <= EPSILON
+                    and abs(other.reliability_cost - candidate.reliability_cost)
+                    <= EPSILON
                 )
                 for other in active
             ):
@@ -279,9 +296,7 @@ class McRaptorTransitSearch:
                 counters["maximum_pareto_bag_size"], len(survivors)
             )
             if stop_id == destination_stop_id:
-                fastest_destination = min(
-                    fastest_destination or arrival, arrival
-                )
+                fastest_destination = min(fastest_destination or arrival, arrival)
             return candidate.label_id, True
 
         origin_label_id, _ = insert(
@@ -316,7 +331,10 @@ class McRaptorTransitSearch:
                         target = transfer["to_stop_id"]
                         if target == stop_id:
                             continue
-                        if transfer.get("from_trip_id") not in (None, label.last_trip_id):
+                        if transfer.get("from_trip_id") not in (
+                            None,
+                            label.last_trip_id,
+                        ):
                             continue
                         arrival = label.arrival + timedelta(
                             seconds=transfer.get("min_transfer_time") or 0
@@ -324,8 +342,13 @@ class McRaptorTransitSearch:
                         if arrival > horizon:
                             continue
                         _, improved = insert(
-                            round_number, target, arrival, label.reliability_cost,
-                            None, transfer.get("to_trip_id"), label_id,
+                            round_number,
+                            target,
+                            arrival,
+                            label.reliability_cost,
+                            None,
+                            transfer.get("to_trip_id"),
+                            label_id,
                             _WalkAction(stop_id, target),
                         )
                         if improved:
@@ -339,7 +362,11 @@ class McRaptorTransitSearch:
         profile_cache: dict[tuple[str, int | None, timedelta], Any] = {}
 
         def profile(connection, _alight_stop):
-            key = (connection.route_id, connection.direction_id, connection.arrival_time)
+            key = (
+                connection.route_id,
+                connection.direction_id,
+                connection.arrival_time,
+            )
             if key not in profile_cache:
                 caches["profile_cache_misses"] += 1
                 caches["profile_resolver_calls"] += 1
@@ -356,7 +383,9 @@ class McRaptorTransitSearch:
             collected: dict[int, int] = {}
             for stop_id in sorted(marked):
                 for pattern_id, position in index.patterns_by_stop.get(stop_id, ()):
-                    collected[pattern_id] = min(collected.get(pattern_id, position), position)
+                    collected[pattern_id] = min(
+                        collected.get(pattern_id, position), position
+                    )
             counters["route_patterns_collected"] += len(collected)
             scans_per_round.append(len(collected))
             next_marked: set[str] = set()
@@ -365,7 +394,9 @@ class McRaptorTransitSearch:
                 counters["route_pattern_scans"] += 1
                 start_position = collected[pattern_id]
                 for board_position in range(start_position, len(pattern.stops) - 1):
-                    boarding_labels = ids_at(round_number - 1, pattern.stops[board_position])
+                    boarding_labels = ids_at(
+                        round_number - 1, pattern.stops[board_position]
+                    )
                     if not boarding_labels:
                         continue
                     for trip in pattern.trips:
@@ -390,21 +421,30 @@ class McRaptorTransitSearch:
                                 continue
                             rules = index.transfers_by_stop.get(parent.stop_id, ())
                             matching = [
-                                rule for rule in rules
+                                rule
+                                for rule in rules
                                 if rule["to_stop_id"] == parent.stop_id
-                                and rule.get("from_trip_id") in (None, parent.last_trip_id)
+                                and rule.get("from_trip_id")
+                                in (None, parent.last_trip_id)
                                 and rule.get("to_trip_id") in (None, trip.trip_id)
                             ]
                             if any(rule["transfer_type"] == 3 for rule in matching):
                                 continue
                             minimum = max(
-                                (rule.get("min_transfer_time") or 0 for rule in matching),
+                                (
+                                    rule.get("min_transfer_time") or 0
+                                    for rule in matching
+                                ),
                                 default=0,
                             )
-                            if boarding.departure_time < parent.arrival + timedelta(seconds=minimum):
+                            if boarding.departure_time < parent.arrival + timedelta(
+                                seconds=minimum
+                            ):
                                 continue
                             counters["trips_boarded"] += 1
-                            for alight_position in range(board_position + 1, len(pattern.stops)):
+                            for alight_position in range(
+                                board_position + 1, len(pattern.stops)
+                            ):
                                 connection = trip.connections[alight_position - 1]
                                 counters["stop_time_entries_scanned"] += 1
                                 if connection.arrival_time > search_cutoff:
@@ -412,7 +452,8 @@ class McRaptorTransitSearch:
                                 selection = profile(connection, connection.to_stop_id)
                                 probability = (
                                     selection.profile.reliability_probability
-                                    if selection.profile is not None else 0.0
+                                    if selection.profile is not None
+                                    else 0.0
                                 )
                                 cost = parent.reliability_cost - math.log(
                                     max(float(probability), EPSILON)
@@ -426,11 +467,16 @@ class McRaptorTransitSearch:
                                     None,
                                     parent_id,
                                     _RideAction(
-                                        trip.trip_id, board_position,
-                                        alight_position, selection,
+                                        trip.trip_id,
+                                        board_position,
+                                        alight_position,
+                                        selection,
                                     ),
                                 )
-                                if improved and connection.to_stop_id != destination_stop_id:
+                                if (
+                                    improved
+                                    and connection.to_stop_id != destination_stop_id
+                                ):
                                     next_marked.add(connection.to_stop_id)
             counters["rounds_executed"] = round_number
             next_marked = transfer_closure(round_number, next_marked)
@@ -454,9 +500,12 @@ class McRaptorTransitSearch:
         if destination_labels:
             fastest = min(label.arrival for label in destination_labels)
             cutoff = fastest + timedelta(minutes=max_extra_minutes)
-            destination_labels = [label for label in destination_labels if label.arrival <= cutoff]
             destination_labels = [
-                label for label in destination_labels
+                label for label in destination_labels if label.arrival <= cutoff
+            ]
+            destination_labels = [
+                label
+                for label in destination_labels
                 if not any(
                     other.label_id != label.label_id
                     and other.arrival <= label.arrival
@@ -480,12 +529,14 @@ class McRaptorTransitSearch:
                     action_chain.append(actions[cursor.action_id])
                 cursor = labels[cursor.parent_id]
             action_chain.reverse()
-            ride_actions = [item for item in action_chain if isinstance(item, _RideAction)]
+            ride_actions = [
+                item for item in action_chain if isinstance(item, _RideAction)
+            ]
             ride_connections = [
                 connection
                 for action in ride_actions
                 for connection in index.trips_by_id[action.trip_id].connections[
-                    action.board_position:action.alight_position
+                    action.board_position : action.alight_position
                 ]
             ]
             stops = load_connection_stops(self.database, ride_connections)
@@ -493,29 +544,50 @@ class McRaptorTransitSearch:
             selections = []
             for action in ride_actions:
                 trip = index.trips_by_id[action.trip_id]
-                segment = trip.connections[action.board_position:action.alight_position]
+                segment = trip.connections[
+                    action.board_position : action.alight_position
+                ]
                 first, last = segment[0], segment[-1]
-                legs.append(RouteLeg(
-                    first.trip_id, first.route_id, first.route_name,
-                    stops[first.from_stop_id], stops[last.to_stop_id],
-                    first.departure_time, last.arrival_time, first.direction_id,
-                    build_leg_stops(segment, stops),
-                ))
+                legs.append(
+                    RouteLeg(
+                        first.trip_id,
+                        first.route_id,
+                        first.route_name,
+                        stops[first.from_stop_id],
+                        stops[last.to_stop_id],
+                        first.departure_time,
+                        last.arrival_time,
+                        first.direction_id,
+                        build_leg_stops(segment, stops),
+                    )
+                )
                 selections.append(action.selection)
             itinerary = Itinerary(
-                origin, destination, service_date, departure_time,
-                label.arrival, tuple(legs),
+                origin,
+                destination,
+                service_date,
+                departure_time,
+                label.arrival,
+                tuple(legs),
             )
             return ReliableAlternative(
-                itinerary, math.exp(-label.reliability_cost),
-                label.reliability_cost, tuple(selections),
+                itinerary,
+                math.exp(-label.reliability_cost),
+                label.reliability_cost,
+                tuple(selections),
             )
 
         alternatives: list[ReliableAlternative] = []
         seen = set()
-        for label in sorted(destination_labels, key=lambda item: (
-            item.reliability_cost, item.arrival, item.boardings, item.label_id
-        )):
+        for label in sorted(
+            destination_labels,
+            key=lambda item: (
+                item.reliability_cost,
+                item.arrival,
+                item.boardings,
+                item.label_id,
+            ),
+        ):
             alternative = reconstruct(label)
             identity = itinerary_identity(alternative.itinerary)
             if not identity or identity in seen:

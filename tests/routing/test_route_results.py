@@ -43,9 +43,7 @@ def alternative(trip_id, minutes, reliability):
 
 def test_default_score_is_half_reliability_and_half_speed():
     item = alternative("SLOW", 20, 0.8)
-    scored = score_alternative(
-        item, timedelta(minutes=10), RoutingPreferences()
-    )
+    scored = score_alternative(item, timedelta(minutes=10), RoutingPreferences())
     assert scored.speed_component == pytest.approx(0.5)
     assert scored.combined_score == pytest.approx(65.0)
 

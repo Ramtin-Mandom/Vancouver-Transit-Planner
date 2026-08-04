@@ -1,13 +1,16 @@
 import type { RoutePlanRequest, RoutePlanResponse, Stop } from "./types";
 
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ??
-  "http://127.0.0.1:8000";
+  import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
+
+export type ApiErrorKind =
+  "invalid_input" | "timeout" | "planner_not_ready" | "feed_expired" | "network" | "server";
 
 export class ApiError extends Error {
   constructor(
     message: string,
-    public readonly status?: number
+    public readonly status?: number,
+    public readonly kind: ApiErrorKind = "server"
   ) {
     super(message);
     this.name = "ApiError";
@@ -20,11 +23,7 @@ interface ValidationIssue {
 }
 
 function errorMessage(status: number, payload: unknown): string {
-  if (
-    typeof payload === "object" &&
-    payload !== null &&
-    "detail" in payload
-  ) {
+  if (typeof payload === "object" && payload !== null && "detail" in payload) {
     const detail = (payload as { detail: unknown }).detail;
     if (typeof detail === "string") return detail;
     if (Array.isArray(detail)) {
@@ -45,16 +44,18 @@ function errorMessage(status: number, payload: unknown): string {
   return defaults[status] ?? "Something went wrong while contacting the planner.";
 }
 
-async function request<T>(
-  path: string,
-  init: RequestInit = {}
-): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${path}`, init);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") throw error;
-    throw new ApiError("Unable to reach the planner API. Is FastAPI running?");
+    console.warn("Planner API request failed", error);
+    throw new ApiError(
+      "Unable to reach the planner. Check your connection and try again.",
+      undefined,
+      "network"
+    );
   }
   if (!response.ok) {
     let payload: unknown;
@@ -63,7 +64,18 @@ async function request<T>(
     } catch {
       payload = null;
     }
-    throw new ApiError(errorMessage(response.status, payload), response.status);
+    const message = errorMessage(response.status, payload);
+    const kind: ApiErrorKind =
+      response.status === 422
+        ? "invalid_input"
+        : response.status === 504
+          ? "timeout"
+          : response.status === 503 && /expired/i.test(message)
+            ? "feed_expired"
+            : response.status === 503
+              ? "planner_not_ready"
+              : "server";
+    throw new ApiError(message, response.status, kind);
   }
   return response.json() as Promise<T>;
 }
@@ -78,11 +90,7 @@ export function checkReady(signal?: AbortSignal): Promise<Readiness> {
   return request("/ready", { signal });
 }
 
-export function searchStops(
-  query: string,
-  limit = 10,
-  signal?: AbortSignal
-): Promise<Stop[]> {
+export function searchStops(query: string, limit = 10, signal?: AbortSignal): Promise<Stop[]> {
   const params = new URLSearchParams({ query: query.trim(), limit: String(limit) });
   return request(`/stops/search?${params.toString()}`, { signal });
 }

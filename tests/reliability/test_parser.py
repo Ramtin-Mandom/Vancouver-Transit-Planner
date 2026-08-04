@@ -1,4 +1,4 @@
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -56,9 +56,7 @@ def test_absolute_timestamp_supports_gtfs_time_above_24_hours():
 
 
 def test_unknown_and_unusable_updates_are_counted():
-    parsed = parse_feed(
-        feed(update(stop_id="UNKNOWN"), update(stop_id="S")), Lookup()
-    )
+    parsed = parse_feed(feed(update(stop_id="UNKNOWN"), update(stop_id="S")), Lookup())
     assert parsed.unknown == 1
     assert parsed.unusable_delay == 1
     assert parsed.stop_updates_processed == 2

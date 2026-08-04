@@ -12,8 +12,14 @@ def test_gtfs_time_round_trip_above_24_hours():
 def test_reliable_options_are_opt_in_and_scheduled_cli_is_compatible():
     args = build_parser().parse_args(
         [
-            "--origin", "A", "--destination", "B",
-            "--date", "2026-07-27", "--departure", "08:00:00",
+            "--origin",
+            "A",
+            "--destination",
+            "B",
+            "--date",
+            "2026-07-27",
+            "--departure",
+            "08:00:00",
         ]
     )
     assert not args.reliable

@@ -17,11 +17,10 @@ vi.mock("./StopAutocomplete", () => ({
     error?: string;
   }) => (
     <div>
-      <span>{label}: {value?.stop_name ?? "none"}</span>
-      <button
-        type="button"
-        onClick={() => onChange(label === "Origin" ? origin : destination)}
-      >
+      <span>
+        {label}: {value?.stop_name ?? "none"}
+      </span>
+      <button type="button" onClick={() => onChange(label === "Origin" ? origin : destination)}>
         Select {label}
       </button>
       {error && <span>{error}</span>}

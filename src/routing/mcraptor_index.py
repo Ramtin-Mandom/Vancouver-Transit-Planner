@@ -41,7 +41,7 @@ class McRaptorIndex:
         departures: list[Connection],
         connections: list[Connection],
         transfers: list[dict[str, Any]],
-    ) -> "McRaptorIndex":
+    ) -> McRaptorIndex:
         eligible_trip_ids = {item.trip_id for item in departures}
         grouped_connections: dict[str, list[Connection]] = defaultdict(list)
         for connection in connections:
@@ -53,10 +53,12 @@ class McRaptorIndex:
         ] = defaultdict(list)
         trips_by_id: dict[str, PatternTrip] = {}
         for trip_id in sorted(grouped_connections):
-            ordered = tuple(sorted(
-                grouped_connections[trip_id],
-                key=lambda item: item.from_stop_sequence,
-            ))
+            ordered = tuple(
+                sorted(
+                    grouped_connections[trip_id],
+                    key=lambda item: item.from_stop_sequence,
+                )
+            )
             if not ordered:
                 continue
             stops = tuple(item.from_stop_id for item in ordered) + (
@@ -69,15 +71,19 @@ class McRaptorIndex:
 
         patterns: list[RoutePattern] = []
         by_stop: dict[str, list[tuple[int, int]]] = defaultdict(list)
-        for pattern_id, key in enumerate(sorted(
-            pattern_groups,
-            key=lambda item: (item[0], -1 if item[1] is None else item[1], item[2]),
-        )):
+        for pattern_id, key in enumerate(
+            sorted(
+                pattern_groups,
+                key=lambda item: (item[0], -1 if item[1] is None else item[1], item[2]),
+            )
+        ):
             route_id, direction_id, stops = key
-            trips = tuple(sorted(
-                pattern_groups[key],
-                key=lambda trip: (trip.departure_at(0), trip.trip_id),
-            ))
+            trips = tuple(
+                sorted(
+                    pattern_groups[key],
+                    key=lambda trip: (trip.departure_at(0), trip.trip_id),
+                )
+            )
             pattern = RoutePattern(pattern_id, route_id, direction_id, stops, trips)
             patterns.append(pattern)
             for position, stop_id in enumerate(stops[:-1]):
@@ -91,10 +97,16 @@ class McRaptorIndex:
             {stop: tuple(sorted(values)) for stop, values in by_stop.items()},
             trips_by_id,
             {
-                stop: tuple(sorted(values, key=lambda item: (
-                    item["to_stop_id"], item.get("from_trip_id") or "",
-                    item.get("to_trip_id") or "",
-                )))
+                stop: tuple(
+                    sorted(
+                        values,
+                        key=lambda item: (
+                            item["to_stop_id"],
+                            item.get("from_trip_id") or "",
+                            item.get("to_trip_id") or "",
+                        ),
+                    )
+                )
                 for stop, values in transfer_groups.items()
             },
         )

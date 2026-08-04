@@ -1,5 +1,5 @@
-from datetime import datetime, timezone
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 from src.reliability.collector import collect_snapshot
@@ -7,7 +7,7 @@ from src.reliability.models import ParseSummary
 
 
 def test_collector_coordinates_batch_insert(monkeypatch):
-    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    timestamp = datetime(2026, 1, 1, tzinfo=UTC)
     parsed = ParseSummary(timestamp, (), 2, 3, 1, 1, 1)
     monkeypatch.setattr("src.reliability.collector.decode_feed", lambda data: "feed")
     monkeypatch.setattr(
@@ -28,7 +28,7 @@ def test_collector_coordinates_batch_insert(monkeypatch):
 
 
 def test_collector_preloads_all_trip_schedules_in_one_lookup_session(monkeypatch):
-    timestamp = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    timestamp = datetime(2026, 1, 1, tzinfo=UTC)
     parsed = ParseSummary(timestamp, (), 1, 1, 0, 0, 0)
 
     class Entity(SimpleNamespace):
@@ -37,21 +37,11 @@ def test_collector_preloads_all_trip_schedules_in_one_lookup_session(monkeypatch
 
     fake_feed = SimpleNamespace(
         entity=[
-            Entity(
-                trip_update=SimpleNamespace(
-                    trip=SimpleNamespace(trip_id="T1")
-                )
-            ),
-            Entity(
-                trip_update=SimpleNamespace(
-                    trip=SimpleNamespace(trip_id="T2")
-                )
-            ),
+            Entity(trip_update=SimpleNamespace(trip=SimpleNamespace(trip_id="T1"))),
+            Entity(trip_update=SimpleNamespace(trip=SimpleNamespace(trip_id="T2"))),
         ]
     )
-    monkeypatch.setattr(
-        "src.reliability.collector.decode_feed", lambda data: fake_feed
-    )
+    monkeypatch.setattr("src.reliability.collector.decode_feed", lambda data: fake_feed)
     monkeypatch.setattr(
         "src.reliability.collector.parse_feed", lambda feed, database: parsed
     )

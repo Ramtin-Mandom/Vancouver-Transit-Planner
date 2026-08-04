@@ -45,36 +45,49 @@ class SearchStats:
 EARTH_RADIUS_METERS = 6_371_008.8
 
 
-def haversine_meters(lat1: float, lon1: float,
-                     lat2: float, lon2: float) -> float:
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Return great-circle distance using the mean Earth radius."""
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = phi2 - phi1
     dlambda = math.radians(lon2 - lon1)
-    value = (math.sin(dphi / 2) ** 2
-             + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
+    value = (
+        math.sin(dphi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    )
     return 2 * EARTH_RADIUS_METERS * math.asin(math.sqrt(min(1.0, value)))
 
 
 def active_services(arrays: dict[str, np.ndarray], service_date) -> np.ndarray:
     ordinal = service_date.toordinal()
-    active = ((ordinal >= arrays["service_start_ordinal"])
-              & (ordinal <= arrays["service_end_ordinal"])
-              & ((arrays["service_weekday_mask"] & (1 << service_date.weekday())) != 0))
+    active = (
+        (ordinal >= arrays["service_start_ordinal"])
+        & (ordinal <= arrays["service_end_ordinal"])
+        & ((arrays["service_weekday_mask"] & (1 << service_date.weekday())) != 0)
+    )
     for match in np.flatnonzero(arrays["exception_date_ordinal"] == ordinal):
         active[int(arrays["exception_service"][match])] = (
-            int(arrays["exception_type"][match]) == 1)
+            int(arrays["exception_type"][match]) == 1
+        )
     return active
 
 
-def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
-           departure: int, service_date, *, algorithm: str,
-           max_transfers: int = 3, search_horizon_seconds: int = 10_800,
-           max_extra_seconds: int = 1_800, candidate_limit: int = 10_000,
-           max_labels: int = 250_000,
-           timeout_seconds: float = 30.0, collect_alternatives: bool = True,
-           heuristic_metadata: dict[str, Any] | None = None,
-           clock=None,
+def search(
+    arrays: dict[str, np.ndarray],
+    origin: int,
+    destination: int,
+    departure: int,
+    service_date,
+    *,
+    algorithm: str,
+    max_transfers: int = 3,
+    search_horizon_seconds: int = 10_800,
+    max_extra_seconds: int = 1_800,
+    candidate_limit: int = 10_000,
+    max_labels: int = 250_000,
+    timeout_seconds: float = 30.0,
+    collect_alternatives: bool = True,
+    heuristic_metadata: dict[str, Any] | None = None,
+    clock=None,
 ) -> tuple[list[Label], list[int], SearchStats]:
     """Run Dijkstra or correctness-safe geographic A* on the state graph."""
     if algorithm not in {"dijkstra", "astar"}:
@@ -87,9 +100,7 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     active = active_services(arrays, service_date)
     horizon = departure + search_horizon_seconds
     labels = [Label(origin, departure, 0, -1, True, -1, -1)]
-    best: dict[tuple[int, int, int, bool], int] = {
-        (origin, -1, 0, True): departure
-    }
+    best: dict[tuple[int, int, int, bool], int] = {(origin, -1, 0, True): departure}
     queue: list[tuple[int, int, int, int]] = []
     stats = SearchStats(pushed=1)
     requested_geographic = algorithm == "astar" and not collect_alternatives
@@ -97,12 +108,16 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     fallback_reason = None
     if algorithm == "astar":
         if collect_alternatives:
-            fallback_reason = "alternatives require arrival-ordered candidate collection"
+            fallback_reason = (
+                "alternatives require arrival-ordered candidate collection"
+            )
         elif not heuristic_metadata:
             fallback_reason = "snapshot has no validated geographic heuristic metadata"
         elif heuristic_metadata.get("enabled") is not True:
-            fallback_reason = str(heuristic_metadata.get("reason") or
-                                  "snapshot geographic heuristic is disabled")
+            fallback_reason = str(
+                heuristic_metadata.get("reason")
+                or "snapshot geographic heuristic is disabled"
+            )
         else:
             try:
                 speed = float(heuristic_metadata["maximum_speed_mps"])
@@ -128,12 +143,22 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         try:
             latitude = float(arrays["stop_lat"][stop])
             longitude = float(arrays["stop_lon"][stop])
-            if (not math.isfinite(latitude) or not math.isfinite(longitude)
-                    or not -90 <= latitude <= 90
-                    or not -180 <= longitude <= 180):
+            if (
+                not math.isfinite(latitude)
+                or not math.isfinite(longitude)
+                or not -90 <= latitude <= 90
+                or not -180 <= longitude <= 180
+            ):
                 raise ValueError
-            value = max(0, math.floor(haversine_meters(
-                latitude, longitude, destination_lat, destination_lon) / speed))
+            value = max(
+                0,
+                math.floor(
+                    haversine_meters(
+                        latitude, longitude, destination_lat, destination_lon
+                    )
+                    / speed
+                ),
+            )
         except (IndexError, TypeError, ValueError, OverflowError):
             # Metadata validation normally prevents this. Keep a request safe
             # if a legacy or externally modified artifact contains bad data.
@@ -141,6 +166,7 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         heuristic_cache[stop] = value
         stats.heuristics += 1
         return value
+
     queue.append((departure + estimate(origin), departure, 0, 0))
     sequence = 1
     winners: list[int] = []
@@ -149,9 +175,15 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     deadline = clock() + timeout_seconds
     departures = arrays["departure_order"]
     offsets = arrays["departure_offsets"]
-    indexed_transfers = all(name in arrays for name in (
-        "transfer_order", "transfer_offsets", "same_stop_transfer_forbidden",
-        "same_stop_transfer_minimum"))
+    indexed_transfers = all(
+        name in arrays
+        for name in (
+            "transfer_order",
+            "transfer_offsets",
+            "same_stop_transfer_forbidden",
+            "same_stop_transfer_minimum",
+        )
+    )
 
     def push(label: Label) -> None:
         nonlocal sequence
@@ -171,7 +203,9 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         heuristic = estimate(label.stop)
         if algorithm == "astar" and not stats.heuristic_enabled:
             stats.zero_fallbacks += 1
-        heapq.heappush(queue, (label.arrival + heuristic, label.arrival, sequence, index))
+        heapq.heappush(
+            queue, (label.arrival + heuristic, label.arrival, sequence, index)
+        )
         sequence += 1
         stats.pushed += 1
 
@@ -186,7 +220,10 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         key = (label.stop, label.trip, label.transfers, label.can_alight)
         if best.get(key) != reached:
             continue
-        if fastest_arrival is not None and reached > fastest_arrival + max_extra_seconds:
+        if (
+            fastest_arrival is not None
+            and reached > fastest_arrival + max_extra_seconds
+        ):
             stats.candidate_collection_complete = True
             stats.termination_reason = "candidate_window_complete"
             break
@@ -220,9 +257,17 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
             stats.transfers += 1
             if int(arrays["transfer_type"][edge]) == 3 or not label.can_alight:
                 continue
-            push(Label(int(arrays["transfer_to"][edge]),
-                       reached + int(arrays["transfer_seconds"][edge]),
-                       label.transfers, label.trip, True, label_index, -2 - int(edge)))
+            push(
+                Label(
+                    int(arrays["transfer_to"][edge]),
+                    reached + int(arrays["transfer_seconds"][edge]),
+                    label.transfers,
+                    label.trip,
+                    True,
+                    label_index,
+                    -2 - int(edge),
+                )
+            )
             if stats.resource_limit_reached:
                 break
         if stats.resource_limit_reached:
@@ -251,13 +296,20 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
                 else:
                     same_stop_rules = np.flatnonzero(
                         (arrays["transfer_from"] == label.stop)
-                        & (arrays["transfer_to"] == label.stop))
-                    if any(int(arrays["transfer_type"][edge]) == 3
-                           for edge in same_stop_rules):
+                        & (arrays["transfer_to"] == label.stop)
+                    )
+                    if any(
+                        int(arrays["transfer_type"][edge]) == 3
+                        for edge in same_stop_rules
+                    ):
                         continue
                     minimum = max(
-                        (int(arrays["transfer_seconds"][edge])
-                         for edge in same_stop_rules), default=0)
+                        (
+                            int(arrays["transfer_seconds"][edge])
+                            for edge in same_stop_rules
+                        ),
+                        default=0,
+                    )
                 if depart < reached + minimum:
                     continue
             if not continuing and int(arrays["pickup_type"][connection]) != 0:
@@ -265,10 +317,17 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
             transfer_count = label.transfers + int(label.trip >= 0 and not continuing)
             if transfer_count > max_transfers:
                 continue
-            push(Label(int(arrays["to_stop"][connection]),
-                       int(arrays["arrival_seconds"][connection]), transfer_count,
-                       trip, int(arrays["drop_off_type"][connection]) == 0,
-                       label_index, connection))
+            push(
+                Label(
+                    int(arrays["to_stop"][connection]),
+                    int(arrays["arrival_seconds"][connection]),
+                    transfer_count,
+                    trip,
+                    int(arrays["drop_off_type"][connection]) == 0,
+                    label_index,
+                    connection,
+                )
+            )
             if stats.resource_limit_reached:
                 break
         if stats.resource_limit_reached:
@@ -291,9 +350,14 @@ def connection_path(labels: list[Label], winner: int) -> list[int]:
     return result
 
 
-def validate_label_path(arrays: dict[str, np.ndarray], labels: list[Label],
-                        winner: int, origin: int, destination: int,
-                        departure: int) -> None:
+def validate_label_path(
+    arrays: dict[str, np.ndarray],
+    labels: list[Label],
+    winner: int,
+    origin: int,
+    destination: int,
+    departure: int,
+) -> None:
     """Validate the full reconstructed state chain, including walking edges."""
     chain: list[Label] = []
     cursor = winner
@@ -306,7 +370,7 @@ def validate_label_path(arrays: dict[str, np.ndarray], labels: list[Label],
     if chain[-1].stop != destination or not chain[-1].can_alight:
         raise ValueError("itinerary does not end at the requested destination")
     counted_transfers = 0
-    for previous, current in zip(chain, chain[1:]):
+    for previous, current in zip(chain, chain[1:], strict=False):
         if current.arrival < previous.arrival:
             raise ValueError("itinerary travels backward in time")
         if current.connection >= 0:
@@ -333,8 +397,10 @@ def validate_label_path(arrays: dict[str, np.ndarray], labels: list[Label],
                 raise ValueError("itinerary references an invalid transfer edge")
             if int(arrays["transfer_type"][edge]) == 3:
                 raise ValueError("itinerary uses a forbidden transfer")
-            if (int(arrays["transfer_from"][edge]) != previous.stop
-                    or int(arrays["transfer_to"][edge]) != current.stop):
+            if (
+                int(arrays["transfer_from"][edge]) != previous.stop
+                or int(arrays["transfer_to"][edge]) != current.stop
+            ):
                 raise ValueError("transfer edge does not connect its labels")
             expected = previous.arrival + int(arrays["transfer_seconds"][edge])
             if current.arrival != expected or not previous.can_alight:
@@ -343,21 +409,34 @@ def validate_label_path(arrays: dict[str, np.ndarray], labels: list[Label],
             raise ValueError("itinerary transfer count is inconsistent")
 
 
-def validate_connection_path(arrays: dict[str, np.ndarray], path: list[int],
-                             origin: int, destination: int, departure: int,
-                             arrival: int) -> None:
+def validate_connection_path(
+    arrays: dict[str, np.ndarray],
+    path: list[int],
+    origin: int,
+    destination: int,
+    departure: int,
+    arrival: int,
+) -> None:
     """Independently reject chronological or disconnected reconstructed rides."""
     if not path:
         raise ValueError("non-trivial itinerary has no ride connections")
     first_stop = int(arrays["from_stop"][path[0]])
-    if first_stop != origin and not len(np.flatnonzero(
-            (arrays["transfer_from"] == origin) & (arrays["transfer_to"] == first_stop)
-            & (arrays["transfer_type"] != 3))):
+    if first_stop != origin and not len(
+        np.flatnonzero(
+            (arrays["transfer_from"] == origin)
+            & (arrays["transfer_to"] == first_stop)
+            & (arrays["transfer_type"] != 3)
+        )
+    ):
         raise ValueError("itinerary does not begin at the requested origin")
     last_stop = int(arrays["to_stop"][path[-1]])
-    if last_stop != destination and not len(np.flatnonzero(
-            (arrays["transfer_from"] == last_stop) & (arrays["transfer_to"] == destination)
-            & (arrays["transfer_type"] != 3))):
+    if last_stop != destination and not len(
+        np.flatnonzero(
+            (arrays["transfer_from"] == last_stop)
+            & (arrays["transfer_to"] == destination)
+            & (arrays["transfer_type"] != 3)
+        )
+    ):
         raise ValueError("itinerary does not end at the requested destination")
     prior_arrival = departure
     prior_stop = first_stop
@@ -370,9 +449,11 @@ def validate_connection_path(arrays: dict[str, np.ndarray], path: list[int],
         if depart < prior_arrival or arrive < depart:
             raise ValueError("itinerary travels backward in time")
         if source != prior_stop:
-            edges = np.flatnonzero((arrays["transfer_from"] == prior_stop)
-                                   & (arrays["transfer_to"] == source)
-                                   & (arrays["transfer_type"] != 3))
+            edges = np.flatnonzero(
+                (arrays["transfer_from"] == prior_stop)
+                & (arrays["transfer_to"] == source)
+                & (arrays["transfer_type"] != 3)
+            )
             if not len(edges):
                 raise ValueError("itinerary contains a disconnected vehicle change")
             minimum = min(int(arrays["transfer_seconds"][edge]) for edge in edges)
@@ -386,8 +467,12 @@ def validate_connection_path(arrays: dict[str, np.ndarray], path: list[int],
     if last_stop == destination and prior_arrival != arrival:
         raise ValueError("reported arrival differs from the final connection")
     if last_stop != destination:
-        edges = np.flatnonzero((arrays["transfer_from"] == last_stop)
-                               & (arrays["transfer_to"] == destination)
-                               & (arrays["transfer_type"] != 3))
-        if arrival < prior_arrival + min(int(arrays["transfer_seconds"][edge]) for edge in edges):
+        edges = np.flatnonzero(
+            (arrays["transfer_from"] == last_stop)
+            & (arrays["transfer_to"] == destination)
+            & (arrays["transfer_type"] != 3)
+        )
+        if arrival < prior_arrival + min(
+            int(arrays["transfer_seconds"][edge]) for edge in edges
+        ):
             raise ValueError("reported arrival omits destination transfer time")

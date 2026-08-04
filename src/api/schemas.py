@@ -9,10 +9,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from src.reliability.policy import DEFAULT_MINIMUM_SAMPLES
-
+from src.routing.cache import DEFAULT_ROUTING_CACHE_MODE
 from src.routing.cli import parse_gtfs_time
 from src.routing.route_results import RoutingPreferences
-from src.routing.cache import DEFAULT_ROUTING_CACHE_MODE
 
 
 class ApiModel(BaseModel):
@@ -259,7 +258,7 @@ class RoutePlanRequest(ApiModel):
     include_diagnostics: bool = False
 
     @model_validator(mode="after")
-    def validate_route_request(self) -> "RoutePlanRequest":
+    def validate_route_request(self) -> RoutePlanRequest:
         self.origin_stop_id = self.origin_stop_id.strip()
         self.destination_stop_id = self.destination_stop_id.strip()
         if not self.origin_stop_id or not self.destination_stop_id:

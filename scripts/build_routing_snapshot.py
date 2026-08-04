@@ -51,13 +51,12 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("data/routing_snapshot"))
     parser.add_argument("--batch-size", type=int, default=10_000)
     parser.add_argument(
-        "--max-peak-rss-mb", type=int,
+        "--max-peak-rss-mb",
+        type=int,
         default=int(os.getenv("ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB", "450")),
         help="fail when measured process peak RSS exceeds this many MiB",
     )
-    parser.add_argument(
-        "--fixture-json", type=Path, help=argparse.SUPPRESS
-    )
+    parser.add_argument("--fixture-json", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.fixture_json is not None:
         fixture = json.loads(args.fixture_json.read_text(encoding="utf-8"))
@@ -74,31 +73,51 @@ def main() -> None:
         )
     else:
         config = DatabaseConfig.from_environment()
-        with psycopg.connect(**config.connection_kwargs(), row_factory=dict_row,
-                             options="-c default_transaction_read_only=on") as connection:
+        with psycopg.connect(
+            **config.connection_kwargs(),
+            row_factory=dict_row,
+            options="-c default_transaction_read_only=on",
+        ) as connection:
             stops = connection.execute("""SELECT s.stop_id,s.stop_name,s.stop_code,s.stop_lat,s.stop_lon,s.parent_station
           FROM transit.stops s WHERE EXISTS (SELECT 1 FROM transit.stop_times st WHERE st.stop_id=s.stop_id)
           ORDER BY s.stop_id""").fetchall()
             version = connection.execute("""SELECT COALESCE(MAX(feed_version),
           CONCAT(MAX(feed_start_date)::text,':',MAX(feed_end_date)::text),'empty-feed') version
           FROM transit.feed_info""").fetchone()["version"]
-            calendars = connection.execute("SELECT * FROM transit.calendar ORDER BY service_id").fetchall()
-            calendar_dates = connection.execute('SELECT service_id, service_date, exception_type FROM transit.calendar_dates ORDER BY service_date, service_id').fetchall()
-            reliability_profiles = connection.execute('SELECT route_id, direction_id, time_window, reliability_probability, sample_count FROM transit.route_direction_reliability ORDER BY route_id, direction_id, time_window').fetchall()
-            fallback_profiles = connection.execute('SELECT profile_level, route_key, direction_key, reliability_probability, on_time_probability, sample_count, distinct_service_dates FROM transit.reliability_fallback_profiles ORDER BY profile_level, route_key, direction_key').fetchall()
-            transfers = connection.execute('SELECT from_stop_id, to_stop_id, transfer_type, min_transfer_time FROM transit.transfers ORDER BY from_stop_id, to_stop_id').fetchall()
+            calendars = connection.execute(
+                "SELECT * FROM transit.calendar ORDER BY service_id"
+            ).fetchall()
+            calendar_dates = connection.execute(
+                "SELECT service_id, service_date, exception_type FROM transit.calendar_dates ORDER BY service_date, service_id"
+            ).fetchall()
+            reliability_profiles = connection.execute(
+                "SELECT route_id, direction_id, time_window, reliability_probability, sample_count FROM transit.route_direction_reliability ORDER BY route_id, direction_id, time_window"
+            ).fetchall()
+            fallback_profiles = connection.execute(
+                "SELECT profile_level, route_key, direction_key, reliability_probability, on_time_probability, sample_count, distinct_service_dates FROM transit.reliability_fallback_profiles ORDER BY profile_level, route_key, direction_key"
+            ).fetchall()
+            transfers = connection.execute(
+                "SELECT from_stop_id, to_stop_id, transfer_type, min_transfer_time FROM transit.transfers ORDER BY from_stop_id, to_stop_id"
+            ).fetchall()
             with connection.cursor(name="routing_snapshot_connections") as cursor:
                 cursor.execute(CONNECTION_SQL)
-                report = build_snapshot_from_rows(args.output, stops=stops,
-                                                  connections=rows(cursor, max(1,args.batch_size)),
-                                                  source_version=str(version), calendars=calendars,
-                                                  calendar_dates=calendar_dates, reliability_profiles=reliability_profiles,
-                                                  reliability_fallback_profiles=fallback_profiles,
-                                                  transfers=transfers,
-                                                  max_peak_rss_bytes=args.max_peak_rss_mb * 1024 * 1024)
+                report = build_snapshot_from_rows(
+                    args.output,
+                    stops=stops,
+                    connections=rows(cursor, max(1, args.batch_size)),
+                    source_version=str(version),
+                    calendars=calendars,
+                    calendar_dates=calendar_dates,
+                    reliability_profiles=reliability_profiles,
+                    reliability_fallback_profiles=fallback_profiles,
+                    transfers=transfers,
+                    max_peak_rss_bytes=args.max_peak_rss_mb * 1024 * 1024,
+                )
     build = report["build"]
-    print(f"built {report['counts']} in {build['duration_seconds']:.3f}s; "
-          f"{build['size_bytes']} bytes; peak RSS={build['peak_rss_bytes']}")
+    print(
+        f"built {report['counts']} in {build['duration_seconds']:.3f}s; "
+        f"{build['size_bytes']} bytes; peak RSS={build['peak_rss_bytes']}"
+    )
 
 
 if __name__ == "__main__":

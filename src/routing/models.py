@@ -269,7 +269,7 @@ class ReliableAlternative:
     itinerary: Itinerary
     route_reliability: float
     reliability_cost: float
-    profile_selections: tuple["ProfileSelection", ...]
+    profile_selections: tuple[ProfileSelection, ...]
     speed_component: float = 0.0
     combined_score: float = 0.0
 

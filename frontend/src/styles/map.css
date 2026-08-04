@@ -1,0 +1,80 @@
+.mapPlaceholder {
+  min-height: 520px;
+  padding: 32px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  text-align: left;
+  color: #5c7380;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(8, 127, 119, 0.08), transparent 30%),
+    linear-gradient(145deg, #f7faf9, #edf3f2);
+}
+.mapPlaceholder svg {
+  color: var(--teal);
+}
+.mapPlaceholder strong {
+  color: var(--navy);
+}
+.mapPlaceholder p {
+  margin: 5px 0 0;
+  max-width: 210px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+.mapPanel {
+  min-height: 520px;
+  padding: 9px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.leaflet-container {
+  flex: 1;
+  min-height: 440px;
+  border-radius: 12px;
+  z-index: 1;
+  background: #dfe8e6;
+}
+.mapCaption {
+  padding: 7px 5px 2px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+.mapLegend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 2px 9px;
+}
+.mapLegend button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: white;
+  padding: 6px 9px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+.mapLegend button[aria-pressed="true"] {
+  border-color: var(--teal);
+  color: var(--teal-dark);
+  background: var(--teal-pale);
+}
+.mapLegend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.tileError {
+  margin: 8px 5px 0;
+  color: #86520b;
+  font-size: 0.72rem;
+}

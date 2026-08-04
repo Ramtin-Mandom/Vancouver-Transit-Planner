@@ -10,9 +10,7 @@ from typing import Any, Protocol
 class CalendarRepository(Protocol):
     def calendar_rule(self, service_id: str) -> dict[str, Any] | None: ...
 
-    def calendar_exception(
-        self, service_id: str, service_date: date
-    ) -> int | None: ...
+    def calendar_exception(self, service_id: str, service_date: date) -> int | None: ...
 
 
 class ServiceCalendar:
@@ -24,7 +22,7 @@ class ServiceCalendar:
         version = str(version_lookup()) if callable(version_lookup) else "unknown"
         return self._operates(version, service_id, service_date)
 
-    @lru_cache(maxsize=4096)
+    @lru_cache(maxsize=4096)  # noqa: B019 -- planner-owned cache shares planner lifetime
     def _operates(self, version: str, service_id: str, service_date: date) -> bool:
         exception = self.database.calendar_exception(service_id, service_date)
         if exception == 1:

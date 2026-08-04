@@ -16,9 +16,7 @@ from .planner import TransitPlanner
 def parse_gtfs_time(value: str) -> timedelta:
     try:
         hours_text, minutes_text, seconds_text = value.split(":")
-        hours, minutes, seconds = map(
-            int, (hours_text, minutes_text, seconds_text)
-        )
+        hours, minutes, seconds = map(int, (hours_text, minutes_text, seconds_text))
     except (ValueError, TypeError) as exc:
         raise argparse.ArgumentTypeError("expected HH:MM:SS") from exc
     if hours < 0 or not 0 <= minutes < 60 or not 0 <= seconds < 60:
@@ -44,9 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reliable", action="store_true")
     parser.add_argument("--alternatives", type=int, default=5)
     parser.add_argument("--max-extra-minutes", type=int, default=30)
-    parser.add_argument(
-        "--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES
-    )
+    parser.add_argument("--minimum-samples", type=int, default=DEFAULT_MINIMUM_SAMPLES)
     parser.add_argument("--search-timeout-seconds", type=float, default=30.0)
     parser.add_argument("--reliability-effect", type=float, default=0.5)
     parser.add_argument("--travel-time-effect", type=float, default=0.5)
@@ -70,9 +66,7 @@ def print_itinerary(itinerary: Itinerary) -> None:
 
 
 def print_reliable_alternatives(result, preferences) -> None:
-    reliability_weight, time_weight, transfer_weight = (
-        preferences.normalized_weights
-    )
+    reliability_weight, time_weight, transfer_weight = preferences.normalized_weights
     for rank, item in enumerate(result.alternatives, start=1):
         print(f"\nAlternative {rank} - combined score {item.combined_score:.1f}")
         print_itinerary(item.itinerary)
@@ -84,9 +78,7 @@ def print_reliable_alternatives(result, preferences) -> None:
             f"{time_weight:.2f}*{item.speed_component:.3f} scheduled-time",
         ]
         if transfer_weight:
-            transfer_component = 1.0 / (
-                1.0 + item.itinerary.transfer_count
-            )
+            transfer_component = 1.0 / (1.0 + item.itinerary.transfer_count)
             components.append(
                 f"{transfer_weight:.2f}*{transfer_component:.3f} transfers"
             )
@@ -115,12 +107,11 @@ def main() -> int:
         if args.reliable:
             from src.reliability.database import ReliabilityDatabase
             from src.reliability.profiles import ProfileResolver
+
             from .route_results import RoutingPreferences
 
             reliability_database = ReliabilityDatabase()
-            resolver = ProfileResolver(
-                reliability_database, args.minimum_samples
-            )
+            resolver = ProfileResolver(reliability_database, args.minimum_samples)
             preferences = RoutingPreferences(
                 reliability_effect=args.reliability_effect,
                 travel_time_effect=args.travel_time_effect,
