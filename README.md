@@ -10,7 +10,7 @@ At first, I wanted to create a date and time based system where users could sele
 
 Instead, I decided to use time buckets, such as noon and night, to calculate stop delays rather than using exact times. This increased the amount of usable data and produced better estimates. For example, during the three days that I collected data, I might have had only three data points for bus 143 at stop X. However, if I used a four-hour time bucket and bus 143 reached that stop every 20 minutes, I could have around 36 data points over three days, which is much better.
 
-For my routing algorithm, I first used Dijkstra’s algorithm and then upgraded it to A* using geographic distance based heuristic(Euclidean), which is admissible in this case.
+For my routing algorithm, I first used Dijkstra’s algorithm and then upgraded it to A* using geographic distance based heuristic(Haversine distanc), which is admissible in this case.
 
 Optimization was the largest part of this project. Since I had never worked with servers before, and there were limitations with my Render plan, I had to make many optimizations to reach an acceptable search time. In the beginning, a local search from my house to SFU took around eight seconds, while the same search on the Render website timed out after 30 seconds. Eventually, I lowered the local search time to around 1.5 seconds and the server search time to around seven seconds.
 
