@@ -21,8 +21,10 @@ from .models import (Itinerary, LegStop, ReliableAlternative, ReliableSearchResu
                      RouteLeg, SearchCacheStatistics, SearchDiagnosticCounters,
                      SearchDiagnostics, SearchDiagnosticTimings, SearchTiming, Stop)
 from .route_results import ranked_search_result
+from .snapshot_search import (connection_path, search as snapshot_search,
+                              validate_connection_path, validate_label_path)
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 REQUIRED_ARRAYS = {
     "stop_ids", "stop_names", "stop_codes", "stop_lat", "stop_lon",
     "trip_ids", "route_ids", "route_names", "service_ids", "from_stop",
@@ -32,6 +34,8 @@ REQUIRED_ARRAYS = {
     "service_start_ordinal", "service_end_ordinal", "service_weekday_mask",
     "exception_service", "exception_date_ordinal", "exception_type",
     "profile_route", "profile_direction", "profile_window", "profile_probability", "profile_samples",
+    "parent_station", "pickup_type", "drop_off_type", "transfer_from",
+    "transfer_to", "transfer_type", "transfer_seconds",
 }
 
 
@@ -120,6 +124,8 @@ def build_snapshot_from_rows(
     calendars: Iterable[Mapping[str, Any]] = (),
     calendar_dates: Iterable[Mapping[str, Any]] = (),
     reliability_profiles: Iterable[Mapping[str, Any]] = (),
+    transfers: Iterable[Mapping[str, Any]] = (),
+    intra_station_transfer_seconds: int = 120,
     max_peak_rss_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Build atomically using a bounded-memory, disk-backed two-pass flow."""
@@ -171,6 +177,8 @@ def build_snapshot_from_rows(
                     from_stop, to_stop, departure, arrival, *indexes,
                     int(row.get("stop_sequence", 0)),
                     -1 if row.get("direction_id") is None else int(row["direction_id"]),
+                    int(row.get("pickup_type") or 0),
+                    int(row.get("drop_off_type") or 0),
                 )
                 spool_file.write(json.dumps(normalized, separators=(",", ":")) + "\n")
                 count += 1
@@ -184,6 +192,10 @@ def build_snapshot_from_rows(
             "stop_codes": _strings(row.get("stop_code") for row in stop_rows),
             "stop_lat": np.asarray([row.get("stop_lat", np.nan) for row in stop_rows], dtype="float32"),
             "stop_lon": np.asarray([row.get("stop_lon", np.nan) for row in stop_rows], dtype="float32"),
+            "parent_station": np.asarray([
+                stop_map.get(str(row.get("parent_station")), -1)
+                if row.get("parent_station") else -1 for row in stop_rows
+            ], dtype="int32"),
             "trip_ids": _strings(dictionaries["trip"].keys()),
             "route_ids": _strings(dictionaries["route"].keys()),
             "route_names": _strings(route_names),
@@ -199,6 +211,8 @@ def build_snapshot_from_rows(
             "service_index": _small_unsigned(max(0, len(dictionaries["service"]) - 1)),
             "stop_sequence": np.dtype("uint16"),
             "direction_id": np.dtype("int8"),
+            "pickup_type": np.dtype("uint8"),
+            "drop_off_type": np.dtype("uint8"),
         }
         for name, dtype in connection_specs.items():
             arrays[name] = _open_array(temporary, name, dtype, count)
@@ -240,6 +254,33 @@ def build_snapshot_from_rows(
         arrays["profile_window"]=np.asarray([p[2] for p in profiles],dtype="uint8")
         arrays["profile_probability"]=np.asarray([p[3] for p in profiles],dtype="float32")
         arrays["profile_samples"]=np.asarray([p[4] for p in profiles],dtype="uint32")
+        transfer_rows = list(transfers)
+        explicit_pairs = {
+            (str(row["from_stop_id"]), str(row["to_stop_id"]))
+            for row in transfer_rows
+        }
+        station_members: dict[str, list[str]] = {}
+        for row in stop_rows:
+            if row.get("parent_station"):
+                station_members.setdefault(str(row["parent_station"]), []).append(str(row["stop_id"]))
+        for members in station_members.values():
+            for from_id in members:
+                for to_id in members:
+                    if from_id != to_id and (from_id, to_id) not in explicit_pairs:
+                        transfer_rows.append({"from_stop_id": from_id, "to_stop_id": to_id,
+                                              "transfer_type": 2,
+                                              "min_transfer_time": intra_station_transfer_seconds})
+        try:
+            arrays["transfer_from"] = np.asarray(
+                [stop_map[str(row["from_stop_id"])] for row in transfer_rows], dtype=stop_dtype)
+            arrays["transfer_to"] = np.asarray(
+                [stop_map[str(row["to_stop_id"])] for row in transfer_rows], dtype=stop_dtype)
+        except KeyError as exc:
+            raise SnapshotError(f"transfer references unknown stop {exc.args[0]}") from exc
+        arrays["transfer_type"] = np.asarray(
+            [int(row.get("transfer_type") or 0) for row in transfer_rows], dtype="uint8")
+        arrays["transfer_seconds"] = np.asarray(
+            [int(row.get("min_transfer_time") or 0) for row in transfer_rows], dtype="uint32")
         index_dtype = np.dtype("uint32" if count <= np.iinfo(np.uint32).max else "uint64")
         arrays["scan_order"] = np.argsort(
             arrays["departure_seconds"], kind="stable"
@@ -260,7 +301,7 @@ def build_snapshot_from_rows(
             "format_version": FORMAT_VERSION,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "source_version": source_version,
-            "compatibility": {"minimum_loader_version": 1},
+            "compatibility": {"minimum_loader_version": 2},
             "counts": {"stops": len(stop_ids), "routes": len(dictionaries["route"]),
                        "trips": len(dictionaries["trip"]), "connections": count},
             "arrays": {name: {"shape": list(array.shape), "dtype": str(array.dtype)} for name, array in arrays.items()},
@@ -370,6 +411,71 @@ class RoutingSnapshot:
         return [self.stop(i) for i in matches[:limit]]
 
 
+class SnapshotStopCatalog:
+    """Read-only stop lookup usable while a routing artifact is incompatible.
+
+    Stop metadata has been stable since snapshot v1. Loading only these arrays
+    keeps autocomplete available without treating an old timetable as routable.
+    """
+
+    REQUIRED = ("stop_ids", "stop_names", "stop_codes", "stop_lat", "stop_lon")
+
+    def __init__(self, path: str | Path):
+        self.path = Path(path)
+        try:
+            self.manifest = json.loads(
+                (self.path / "manifest.json").read_text(encoding="utf-8")
+            )
+            declared = self.manifest["arrays"]
+            self.arrays = {
+                name: np.load(self.path / f"{name}.npy", mmap_mode="r", allow_pickle=False)
+                for name in self.REQUIRED
+            }
+        except Exception as exc:
+            raise SnapshotError("snapshot stop catalog is missing or invalid") from exc
+        for name, array in self.arrays.items():
+            spec = declared.get(name)
+            if spec is None or list(array.shape) != spec.get("shape") or str(array.dtype) != spec.get("dtype"):
+                self.close()
+                raise SnapshotError(f"snapshot stop array {name} does not match manifest")
+            array.flags.writeable = False
+        lengths = {len(array) for array in self.arrays.values()}
+        if len(lengths) != 1:
+            self.close()
+            raise SnapshotError("snapshot stop arrays have inconsistent lengths")
+        self._stop_id_order = np.argsort(self.arrays["stop_ids"], kind="stable")
+
+    def close(self) -> None:
+        for array in getattr(self, "arrays", {}).values():
+            mmap = getattr(array, "_mmap", None)
+            if mmap is not None:
+                mmap.close()
+        getattr(self, "arrays", {}).clear()
+
+    def stop(self, index: int) -> Stop:
+        a = self.arrays
+        lat, lon = float(a["stop_lat"][index]), float(a["stop_lon"][index])
+        return Stop(str(a["stop_ids"][index]), str(a["stop_names"][index]),
+                    str(a["stop_codes"][index]) or None,
+                    None if math.isnan(lat) else lat,
+                    None if math.isnan(lon) else lon)
+
+    def find_stop(self, stop_id: str) -> Stop | None:
+        ordered = self.arrays["stop_ids"][self._stop_id_order]
+        position = int(np.searchsorted(ordered, stop_id))
+        if position >= len(ordered) or str(ordered[position]) != stop_id:
+            return None
+        return self.stop(int(self._stop_id_order[position]))
+
+    def search_stops(self, query: str, limit: int = 20) -> list[Stop]:
+        needle = query.casefold()
+        matches = [i for i, name in enumerate(self.arrays["stop_names"])
+                   if needle in str(name).casefold()]
+        matches.sort(key=lambda i: (str(self.arrays["stop_names"][i]),
+                                    str(self.arrays["stop_ids"][i])))
+        return [self.stop(i) for i in matches[:limit]]
+
+
 class SnapshotPlanner:
     """Connection-scan planner operating on mmap arrays, materializing only results."""
 
@@ -380,32 +486,25 @@ class SnapshotPlanner:
                                 service_date: date, departure_time: timedelta, resolver=None,
                                 *, route_number=5, preferences=None, algorithm="astar",
                                 include_diagnostics=False, **_: Any) -> ReliableSearchResult:
+        requested_algorithm = str(algorithm).strip().lower()
+        if requested_algorithm == "baseline":
+            requested_algorithm = "dijkstra"
+        if requested_algorithm not in {"dijkstra", "astar"}:
+            raise ValueError("snapshot routing algorithm must be 'dijkstra' or 'astar'")
         started = perf_counter(); a = self.snapshot.arrays
         origin = self.snapshot.stop_index(origin_stop_id); destination = self.snapshot.stop_index(destination_stop_id)
-        inf = np.iinfo(np.uint32).max
-        arrivals = np.full(len(a["stop_ids"]), inf, dtype="uint32")
-        predecessors = np.full(len(a["stop_ids"]), -1, dtype="int64")
-        arrivals[origin] = max(0, int(departure_time.total_seconds()))
-        ordinal=service_date.toordinal(); active=(ordinal >= a["service_start_ordinal"]) & (ordinal <= a["service_end_ordinal"]) & ((a["service_weekday_mask"] & (1 << service_date.weekday())) != 0)
-        if len(a["exception_date_ordinal"]):
-            matches=np.flatnonzero(a["exception_date_ordinal"] == ordinal)
-            for match in matches:
-                active[int(a["exception_service"][match])] = int(a["exception_type"][match]) == 1
-        examined = 0
-        for raw in a["scan_order"]:
-            i = int(raw); examined += 1
-            if not active[int(a["service_index"][i])]:
-                continue
-            source, target = int(a["from_stop"][i]), int(a["to_stop"][i])
-            departure = int(a["departure_seconds"][i]); arrival = int(a["arrival_seconds"][i])
-            if departure >= int(arrivals[source]) and arrival < int(arrivals[target]):
-                arrivals[target] = arrival; predecessors[target] = i
+        departure_seconds = max(0, int(departure_time.total_seconds()))
+        labels, winner, stats = snapshot_search(
+            a, origin, destination, departure_seconds, service_date,
+            algorithm=requested_algorithm,
+            max_transfers=int(_.get("max_transfers", 3)),
+            search_horizon_seconds=int(_.get("search_horizon_minutes", 180)) * 60,
+        )
         alternatives: tuple[ReliableAlternative, ...] = ()
-        if predecessors[destination] >= 0:
-            path=[]; cursor=destination
-            while cursor != origin and predecessors[cursor] >= 0:
-                i=int(predecessors[cursor]); path.append(i); cursor=int(a["from_stop"][i])
-            path.reverse()
+        if winner is not None:
+            path = connection_path(labels, winner)
+            validate_label_path(a, labels, winner, origin, destination,
+                                departure_seconds)
             legs=[]; selections=[]; pos=0
             while pos < len(path):
                 first=path[pos]; trip=int(a["trip_index"][first]); end=pos
@@ -423,15 +522,26 @@ class SnapshotPlanner:
                 window=time_window(timedelta(seconds=int(a["departure_seconds"][f])))
                 selection = resolver.resolve(str(a["route_ids"][route]), direction_value, window) if resolver else self._profile(route,direction_value,window,int(_.get("minimum_samples",20)))
                 selections.append(selection); pos=end+1
+            # Missing profiles use an explicit conservative fallback. They are
+            # never silently treated as perfectly reliable.
             probability=1.0
             for selection in selections:
-                probability *= float(selection.profile.reliability_probability) if selection.profile else 1.0
+                probability *= float(selection.profile.reliability_probability) if selection.profile else 0.5
             itinerary=Itinerary(self.snapshot.stop(origin), self.snapshot.stop(destination), service_date,
-                                timedelta(seconds=int(a["departure_seconds"][path[0]])), timedelta(seconds=int(arrivals[destination])), tuple(legs))
+                                departure_time, timedelta(seconds=labels[winner].arrival), tuple(legs))
             alternatives=(ReliableAlternative(itinerary, probability, -math.log(max(probability,1e-9)), tuple(selections)),)
         search_ms=(perf_counter()-started)*1000
         diagnostics = SearchDiagnostics(SearchDiagnosticTimings(measured_search_ms=search_ms),
-            SearchDiagnosticCounters(algorithm=algorithm, connections_examined=examined, alternatives_reconstructed=len(alternatives)),
+            SearchDiagnosticCounters(
+                algorithm=requested_algorithm, requested_algorithm=str(algorithm),
+                executed_algorithm=requested_algorithm, states_pushed=stats.pushed,
+                states_popped=stats.popped, states_reopened=stats.reopened,
+                transfer_edges_examined=stats.transfers,
+                heuristic_evaluations=stats.heuristics,
+                zero_heuristic_fallbacks=stats.zero_fallbacks,
+                final_arrival_cost=(labels[winner].arrival if winner is not None else 0),
+                connections_examined=stats.connections,
+                alternatives_reconstructed=len(alternatives)),
             SearchCacheStatistics(unexpected_queries_during_search=0)) if include_diagnostics else None
         result=ReliableSearchResult(alternatives, SearchTiming(0,search_ms,0,search_ms),0,diagnostics)
         return ranked_search_result(result, route_number=route_number, preferences=preferences)

@@ -78,4 +78,11 @@ describe("RouteResults", () => {
     );
     expect(screen.getByText("No scheduled routes found")).toBeVisible();
   });
+
+  it("suppresses comparison badges when only one route exists", () => {
+    render(<RouteResults result={{ ...routeResult, alternatives: [routeResult.alternatives[0]] }} />);
+    expect(screen.queryByText("Fastest")).not.toBeInTheDocument();
+    expect(screen.queryByText("Most reliable")).not.toBeInTheDocument();
+    expect(screen.queryByText("Best overall")).not.toBeInTheDocument();
+  });
 });

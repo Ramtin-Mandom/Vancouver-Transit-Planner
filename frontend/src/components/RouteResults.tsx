@@ -5,6 +5,7 @@ import { RouteCard } from "./RouteCard";
 function routeLabels(result: RoutePlanResponse, index: number): string[] {
   const alternative = result.alternatives[index];
   const labels: string[] = [];
+  if (result.alternatives.length < 2) return labels;
   if (index === 0) labels.push("Best overall");
   const highestReliability = Math.max(
     ...result.alternatives.map((item) => item.route_reliability)

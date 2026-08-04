@@ -15,7 +15,8 @@ from src.routing.database import TransitDatabase
 from src.routing.planner import TransitPlanner
 from src.routing.cache import RoutingCacheManager
 from src.routing.warmup import RoutingWarmupCoordinator
-from src.routing.snapshot import RoutingSnapshot, SnapshotError, SnapshotPlanner
+from src.routing.snapshot import (RoutingSnapshot, SnapshotError, SnapshotPlanner,
+                                  SnapshotStopCatalog)
 
 
 @dataclass
@@ -26,6 +27,7 @@ class ApiServices:
     cache_manager: RoutingCacheManager | None = None
     warmup: RoutingWarmupCoordinator | None = None
     snapshot: RoutingSnapshot | None = None
+    routing_unavailable_reason: str | None = None
 
     def close(self) -> None:
         try:
@@ -51,9 +53,15 @@ def create_services() -> ApiServices:
         # Reliability profiles are part of the artifact in future formats. A
         # null resolver keeps current response semantics without opening SQL.
         return ApiServices(snapshot, SnapshotPlanner(snapshot), None, snapshot=snapshot)
-    except SnapshotError:
+    except SnapshotError as exc:
         if required or not development_fallback:
-            raise
+            # Autocomplete is safe across snapshot versions because it reads
+            # only stable stop metadata. Routing remains explicitly unready.
+            catalog = SnapshotStopCatalog(Path(snapshot_path))
+            return ApiServices(
+                catalog, None, None,
+                routing_unavailable_reason=str(exc)[:240],
+            )
         # Explicitly opted-in local compatibility path only.
     transit_database = TransitDatabase()
     try:

@@ -6,7 +6,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from src.routing.snapshot import (RoutingSnapshot, SnapshotError, SnapshotPlanner,
-                                  build_snapshot_from_rows)
+                                  SnapshotStopCatalog, build_snapshot_from_rows)
 import src.routing.snapshot as snapshot_module
 
 
@@ -41,14 +41,21 @@ def test_array_planner_and_concurrent_reads(snapshot):
     def route():
         return planner.get_ranked_route_result("A","C",date(2026,8,3),timedelta(hours=8))
     results=list(ThreadPoolExecutor(max_workers=4).map(lambda _:route(),range(12)))
-    assert all(result.alternatives[0].route_reliability == 1.0 for result in results)
+    assert all(result.alternatives[0].route_reliability == 0.25 for result in results)
     assert all(len(result.alternatives[0].itinerary.legs) == 2 for result in results)
+    assert all(result.alternatives[0].itinerary.departure_time == timedelta(hours=8) for result in results)
 
 
 def test_incompatible_and_corrupt_snapshots(tmp_path):
     path=tmp_path/"snapshot"; build_snapshot_from_rows(path,stops=STOPS,connections=CONNECTIONS)
-    manifest=path/"manifest.json"; manifest.write_text(manifest.read_text().replace('"format_version": 1','"format_version": 999'))
+    manifest=path/"manifest.json"; manifest.write_text(manifest.read_text().replace('"format_version": 2','"format_version": 999'))
     with pytest.raises(SnapshotError,match="unsupported"): RoutingSnapshot(path)
+    catalog = SnapshotStopCatalog(path)
+    try:
+        assert [stop.stop_id for stop in catalog.search_stops("alpha")] == ["A"]
+        assert catalog.find_stop("C").stop_name == "Central"
+    finally:
+        catalog.close()
     manifest.unlink()
     with pytest.raises(SnapshotError,match="manifest"): RoutingSnapshot(path)
 
@@ -98,3 +105,57 @@ def test_build_fails_when_peak_rss_exceeds_limit(tmp_path, monkeypatch):
             max_peak_rss_bytes=10_000,
         )
     assert not list(tmp_path.glob(".snapshot.tmp-*"))
+
+
+def test_astar_and_dijkstra_agree_and_report_executed_algorithm(snapshot):
+    planner = SnapshotPlanner(snapshot)
+    dijkstra = planner.get_ranked_route_result(
+        "A", "C", date(2026, 8, 3), timedelta(hours=7, minutes=55),
+        algorithm="dijkstra", include_diagnostics=True)
+    astar = planner.get_ranked_route_result(
+        "A", "C", date(2026, 8, 3), timedelta(hours=7, minutes=55),
+        algorithm="astar", include_diagnostics=True)
+    assert dijkstra.alternatives[0].itinerary.arrival_time == astar.alternatives[0].itinerary.arrival_time
+    assert dijkstra.diagnostics.counters.executed_algorithm == "dijkstra"
+    assert astar.diagnostics.counters.executed_algorithm == "astar"
+    assert astar.diagnostics.counters.zero_heuristic_fallbacks > 0
+    assert astar.alternatives[0].itinerary.total_scheduled_travel_time == timedelta(minutes=35)
+
+
+def test_pickup_dropoff_transfer_and_maximum_transfer(tmp_path):
+    stops = [
+        {"stop_id": "A", "stop_name": "A", "parent_station": None},
+        {"stop_id": "B1", "stop_name": "B bay 1", "parent_station": "B"},
+        {"stop_id": "B2", "stop_name": "B bay 2", "parent_station": "B"},
+        {"stop_id": "B", "stop_name": "B station", "parent_station": None},
+        {"stop_id": "C", "stop_name": "C", "parent_station": None},
+    ]
+    connections = [
+        {"from_stop_id":"A","to_stop_id":"B1","departure_seconds":28800,"arrival_seconds":29400,
+         "trip_id":"T1","route_id":"R1","service_id":"S","stop_sequence":1},
+        {"from_stop_id":"B2","to_stop_id":"C","departure_seconds":29520,"arrival_seconds":30000,
+         "trip_id":"T2","route_id":"R2","service_id":"S","stop_sequence":1},
+    ]
+    path = tmp_path / "rules"
+    build_snapshot_from_rows(path, stops=stops, connections=connections,
+                             intra_station_transfer_seconds=120)
+    loaded = RoutingSnapshot(path)
+    try:
+        result = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="dijkstra", max_transfers=1)
+        assert result.alternatives[0].itinerary.arrival_time == timedelta(seconds=30000)
+        blocked = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="dijkstra", max_transfers=0)
+        assert blocked.alternatives == ()
+        origin_transfer = SnapshotPlanner(loaded).get_ranked_route_result(
+            "B1", "C", date(2026, 8, 3), timedelta(seconds=29280),
+            algorithm="dijkstra", max_transfers=0)
+        assert origin_transfer.alternatives[0].itinerary.arrival_time == timedelta(seconds=30000)
+        destination_transfer = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "B2", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="dijkstra", max_transfers=0)
+        assert destination_transfer.alternatives[0].itinerary.arrival_time == timedelta(seconds=29520)
+    finally:
+        loaded.close()

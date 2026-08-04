@@ -128,6 +128,34 @@ def client(api_services):
     app.state.services = None
 
 
+def test_incompatible_routing_snapshot_keeps_autocomplete_available():
+    services = ApiServices(
+        FakeTransitDatabase(), None, None,
+        routing_unavailable_reason="unsupported snapshot format 1",
+    )
+    app.state.services = services
+    app.state.owns_services = False
+    try:
+        with TestClient(app, raise_server_exceptions=False) as partial_client:
+            response = partial_client.get("/stops/search", params={"query": "co", "limit": 10})
+            assert response.status_code == 200
+            readiness = partial_client.get("/ready")
+            assert readiness.json() == {
+                "ready": False,
+                "snapshot_loaded": False,
+                "autocomplete_available": True,
+                "reason": "unsupported snapshot format 1",
+            }
+            route = partial_client.post("/routes/plan", json={
+                "origin_stop_id": ORIGIN.stop_id,
+                "destination_stop_id": DESTINATION.stop_id,
+                "departure_time": "08:00:00",
+            })
+            assert route.status_code == 503
+    finally:
+        app.state.services = None
+
+
 @pytest.fixture(autouse=True)
 def fixed_vancouver_service_date(monkeypatch):
     monkeypatch.setattr("src.api.main.current_service_date", lambda: date(2026, 7, 27))

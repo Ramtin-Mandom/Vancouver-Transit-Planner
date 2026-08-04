@@ -185,6 +185,10 @@ def ready(request: Request) -> dict[str, object]:
     if services is None:
         return {"ready": False, "snapshot_loaded": False,
                 "reason": getattr(request.app.state, "snapshot_failure", None) or "routing services unavailable"}
+    if services.routing_unavailable_reason is not None:
+        return {"ready": False, "snapshot_loaded": False,
+                "autocomplete_available": True,
+                "reason": services.routing_unavailable_reason}
     if services.snapshot is not None:
         manifest = services.snapshot.manifest
         return {"ready": True, "snapshot_loaded": True,
@@ -249,6 +253,10 @@ def plan_routes(
     request: RoutePlanRequest,
     services: ApiServices = Depends(get_services),
 ) -> RoutePlanResponse:
+    if services.planner is None:
+        raise ServicesUnavailable(
+            services.routing_unavailable_reason or "routing services are unavailable"
+        )
     # The public API does not expose future-date planning yet. Timetable logic
     # still receives an internal Vancouver-local GTFS service date.
     service_date = current_service_date()
