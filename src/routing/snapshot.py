@@ -22,9 +22,10 @@ from .models import (Itinerary, LegStop, ReliableAlternative, ReliableSearchResu
                      SearchDiagnostics, SearchDiagnosticTimings, SearchTiming, Stop)
 from .route_results import ranked_search_result
 from .snapshot_search import (connection_path, search as snapshot_search,
-                              validate_label_path)
+                              haversine_meters, validate_label_path)
 
 FORMAT_VERSION = 2
+MAX_ALTERNATIVES = 3
 REQUIRED_ARRAYS = {
     "stop_ids", "stop_names", "stop_codes", "stop_lat", "stop_lon",
     "trip_ids", "route_ids", "route_names", "service_ids", "from_stop",
@@ -37,6 +38,59 @@ REQUIRED_ARRAYS = {
     "parent_station", "pickup_type", "drop_off_type", "transfer_from",
     "transfer_to", "transfer_type", "transfer_seconds",
 }
+HEURISTIC_SAFETY_MARGIN = 1.001
+
+
+def _coordinate(value: Any, latitude: bool) -> float:
+    result = float(value)
+    limit = 90.0 if latitude else 180.0
+    if not math.isfinite(result) or not -limit <= result <= limit:
+        raise ValueError("missing or invalid stop coordinates")
+    return result
+
+
+def _geographic_heuristic_metadata(arrays: Mapping[str, np.ndarray]) -> dict[str, Any]:
+    """Prove a global spatial-edge speed bound, or return a safe fallback."""
+    try:
+        coordinates = [
+            (_coordinate(lat, True), _coordinate(lon, False))
+            for lat, lon in zip(arrays["stop_lat"], arrays["stop_lon"])
+        ]
+        maximum = 0.0
+        edge_count = 0
+        for source, target, departure, arrival in zip(
+                arrays["from_stop"], arrays["to_stop"],
+                arrays["departure_seconds"], arrays["arrival_seconds"]):
+            source, target = int(source), int(target)
+            distance = haversine_meters(*coordinates[source], *coordinates[target])
+            if distance <= 0:
+                continue
+            duration = int(arrival) - int(departure)
+            if duration <= 0:
+                raise ValueError("spatial transit edge has non-positive duration")
+            maximum = max(maximum, distance / duration)
+            edge_count += 1
+        for source, target, kind, duration in zip(
+                arrays["transfer_from"], arrays["transfer_to"],
+                arrays["transfer_type"], arrays["transfer_seconds"]):
+            if int(kind) == 3:
+                continue
+            source, target = int(source), int(target)
+            distance = haversine_meters(*coordinates[source], *coordinates[target])
+            if distance <= 0:
+                continue
+            duration = int(duration)
+            if duration <= 0:
+                raise ValueError("spatial transfer edge has non-positive duration")
+            maximum = max(maximum, distance / duration)
+            edge_count += 1
+        if edge_count == 0 or maximum <= 0:
+            raise ValueError("snapshot has no positive-displacement spatial edges")
+        return {"enabled": True, "maximum_speed_mps": maximum * HEURISTIC_SAFETY_MARGIN,
+                "safety_margin": HEURISTIC_SAFETY_MARGIN,
+                "validated_spatial_edges": edge_count}
+    except (KeyError, IndexError, TypeError, ValueError, OverflowError) as exc:
+        return {"enabled": False, "reason": str(exc)}
 
 
 class SnapshotError(RuntimeError):
@@ -310,6 +364,7 @@ def build_snapshot_from_rows(
                 "size_bytes": array_size,
                 "peak_rss_bytes": peak_rss,
             },
+            "geographic_heuristic": _geographic_heuristic_metadata(arrays),
         }
         (temporary / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
         # Windows cannot rename a directory containing open mmap handles.
@@ -374,6 +429,35 @@ class RoutingSnapshot:
                 raise SnapshotError(f"snapshot array {name} contains an out-of-range index")
         if np.any(self.arrays["arrival_seconds"] < self.arrays["departure_seconds"]):
             raise SnapshotError("snapshot contains invalid connection time ordering")
+        declared_heuristic = self.manifest.get("geographic_heuristic")
+        if not isinstance(declared_heuristic, dict):
+            self.heuristic_metadata = {
+                "enabled": False,
+                "reason": "snapshot has no validated geographic heuristic metadata",
+            }
+        elif declared_heuristic.get("enabled") is not True:
+            self.heuristic_metadata = {
+                "enabled": False,
+                "reason": str(declared_heuristic.get("reason") or
+                              "snapshot geographic heuristic is disabled"),
+            }
+        else:
+            validated = _geographic_heuristic_metadata(self.arrays)
+            try:
+                declared_speed = float(declared_heuristic["maximum_speed_mps"])
+            except (KeyError, TypeError, ValueError):
+                declared_speed = 0.0
+            if (not validated.get("enabled")
+                    or not math.isfinite(declared_speed)
+                    or declared_speed < float(validated.get("maximum_speed_mps", math.inf))):
+                self.heuristic_metadata = {
+                    "enabled": False,
+                    "reason": (str(validated.get("reason"))
+                               if not validated.get("enabled")
+                               else "snapshot geographic heuristic speed bound is invalid"),
+                }
+            else:
+                self.heuristic_metadata = dict(declared_heuristic)
         self._stop_id_order = np.argsort(self.arrays["stop_ids"], kind="stable")
 
     def close(self) -> None:
@@ -519,7 +603,8 @@ class SnapshotPlanner:
 
     def get_ranked_route_result(self, origin_stop_id: str, destination_stop_id: str,
                                 service_date: date, departure_time: timedelta, resolver=None,
-                                *, route_number=3, preferences=None, algorithm="astar",
+                                *, route_number=MAX_ALTERNATIVES, preferences=None,
+                                algorithm="astar", include_alternatives=False,
                                 include_diagnostics=False, **_: Any) -> ReliableSearchResult:
         requested_algorithm = str(algorithm).strip().lower()
         if requested_algorithm == "baseline":
@@ -529,15 +614,20 @@ class SnapshotPlanner:
         started = perf_counter(); a = self.snapshot.arrays
         origin = self.snapshot.stop_index(origin_stop_id); destination = self.snapshot.stop_index(destination_stop_id)
         departure_seconds = max(0, int(departure_time.total_seconds()))
-        route_limit = min(3, max(1, int(route_number)))
+        route_limit = min(
+            MAX_ALTERNATIVES, max(1, int(route_number))
+        ) if include_alternatives else 1
         labels, winners, stats = snapshot_search(
             a, origin, destination, departure_seconds, service_date,
             algorithm=requested_algorithm,
             max_transfers=int(_.get("max_transfers", 3)),
             search_horizon_seconds=int(_.get("search_horizon_minutes", 180)) * 60,
             max_extra_seconds=int(_.get("max_extra_minutes", 30)) * 60,
-            candidate_limit=max(8, route_limit * 4),
+            candidate_limit=(max(8, route_limit * 4)
+                             if include_alternatives else 1),
             timeout_seconds=float(_.get("timeout_seconds", 30.0)),
+            collect_alternatives=include_alternatives,
+            heuristic_metadata=self.snapshot.heuristic_metadata,
         )
         materialized: list[ReliableAlternative] = []
         identities: set[tuple] = set()
@@ -588,6 +678,10 @@ class SnapshotPlanner:
                 transfer_edges_examined=stats.transfers,
                 heuristic_evaluations=stats.heuristics,
                 zero_heuristic_fallbacks=stats.zero_fallbacks,
+                geographic_heuristic_enabled=stats.heuristic_enabled,
+                validated_maximum_speed_mps=stats.maximum_speed_mps,
+                heuristic_fallback_reason=stats.heuristic_fallback_reason,
+                heuristic_cache_hits=stats.heuristic_cache_hits,
                 final_arrival_cost=(labels[winners[0]].arrival if winners else 0),
                 connections_examined=stats.connections,
                 destination_labels_found=len(winners),

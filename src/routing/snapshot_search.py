@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+import math
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any
@@ -30,6 +31,24 @@ class SearchStats:
     transfers: int = 0
     heuristics: int = 0
     zero_fallbacks: int = 0
+    heuristic_cache_hits: int = 0
+    heuristic_enabled: bool = False
+    maximum_speed_mps: float | None = None
+    heuristic_fallback_reason: str | None = None
+
+
+EARTH_RADIUS_METERS = 6_371_008.8
+
+
+def haversine_meters(lat1: float, lon1: float,
+                     lat2: float, lon2: float) -> float:
+    """Return great-circle distance using the mean Earth radius."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = phi2 - phi1
+    dlambda = math.radians(lon2 - lon1)
+    value = (math.sin(dphi / 2) ** 2
+             + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2)
+    return 2 * EARTH_RADIUS_METERS * math.asin(math.sqrt(min(1.0, value)))
 
 
 def active_services(arrays: dict[str, np.ndarray], service_date) -> np.ndarray:
@@ -47,14 +66,10 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
            departure: int, service_date, *, algorithm: str,
            max_transfers: int = 3, search_horizon_seconds: int = 10_800,
            max_extra_seconds: int = 1_800, candidate_limit: int = 24,
-           timeout_seconds: float = 30.0,
+           timeout_seconds: float = 30.0, collect_alternatives: bool = True,
+           heuristic_metadata: dict[str, Any] | None = None,
 ) -> tuple[list[Label], list[int], SearchStats]:
-    """Run Dijkstra or zero-heuristic A* on the identical timetable state graph.
-
-    A zero heuristic is deliberately used until a non-zero lower bound can be
-    proven against the feed. This is still A* and is the required equivalence
-    sanity mode; it makes no unproved geographic-speed assumption.
-    """
+    """Run Dijkstra or correctness-safe geographic A* on the state graph."""
     if algorithm not in {"dijkstra", "astar"}:
         raise ValueError("snapshot routing algorithm must be 'dijkstra' or 'astar'")
     active = active_services(arrays, service_date)
@@ -63,8 +78,48 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     best: dict[tuple[int, int, int, bool], int] = {
         (origin, -1, 0, True): departure
     }
-    queue: list[tuple[int, int, int, int]] = [(departure, departure, 0, 0)]
+    queue: list[tuple[int, int, int, int]] = []
     stats = SearchStats(pushed=1)
+    requested_geographic = algorithm == "astar" and not collect_alternatives
+    speed = None
+    fallback_reason = None
+    if algorithm == "astar":
+        if collect_alternatives:
+            fallback_reason = "alternatives require arrival-ordered candidate collection"
+        elif not heuristic_metadata:
+            fallback_reason = "snapshot has no validated geographic heuristic metadata"
+        elif heuristic_metadata.get("enabled") is not True:
+            fallback_reason = str(heuristic_metadata.get("reason") or
+                                  "snapshot geographic heuristic is disabled")
+        else:
+            try:
+                speed = float(heuristic_metadata["maximum_speed_mps"])
+                if not math.isfinite(speed) or speed <= 0:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                speed = None
+                fallback_reason = "snapshot geographic heuristic metadata is invalid"
+    stats.heuristic_enabled = requested_geographic and speed is not None
+    stats.maximum_speed_mps = speed if stats.heuristic_enabled else None
+    stats.heuristic_fallback_reason = fallback_reason
+    heuristic_cache: dict[int, int] = {destination: 0}
+    destination_lat = float(arrays["stop_lat"][destination])
+    destination_lon = float(arrays["stop_lon"][destination])
+
+    def estimate(stop: int) -> int:
+        if not stats.heuristic_enabled:
+            return 0
+        cached = heuristic_cache.get(stop)
+        if cached is not None:
+            stats.heuristic_cache_hits += 1
+            return cached
+        value = max(0, math.floor(haversine_meters(
+            float(arrays["stop_lat"][stop]), float(arrays["stop_lon"][stop]),
+            destination_lat, destination_lon) / speed))
+        heuristic_cache[stop] = value
+        stats.heuristics += 1
+        return value
+    queue.append((departure + estimate(origin), departure, 0, 0))
     sequence = 1
     winners: list[int] = []
     winner_paths: set[tuple[int, ...]] = set()
@@ -84,9 +139,8 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
         best[key] = label.arrival
         labels.append(label)
         index = len(labels) - 1
-        heuristic = 0
-        if algorithm == "astar":
-            stats.heuristics += 1
+        heuristic = estimate(label.stop)
+        if algorithm == "astar" and not stats.heuristic_enabled:
             stats.zero_fallbacks += 1
         heapq.heappush(queue, (label.arrival + heuristic, label.arrival, sequence, index))
         sequence += 1
@@ -110,6 +164,8 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
                 winners.append(label_index)
                 if fastest_arrival is None:
                     fastest_arrival = reached
+                if not collect_alternatives:
+                    break
                 if len(winners) >= candidate_limit:
                     break
             continue

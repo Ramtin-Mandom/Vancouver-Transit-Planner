@@ -122,6 +122,10 @@ class SearchDiagnosticCountersResponse(ApiModel):
     transfer_edges_examined: int = 0
     heuristic_evaluations: int = 0
     zero_heuristic_fallbacks: int = 0
+    geographic_heuristic_enabled: bool = False
+    validated_maximum_speed_mps: float | None = None
+    heuristic_fallback_reason: str | None = None
+    heuristic_cache_hits: int = 0
     final_arrival_cost: int = 0
     candidate_trip_ids_from_frontier: int = 0
     unique_frontier_trips_requested: int = 0
@@ -241,7 +245,7 @@ class RoutePlanRequest(ApiModel):
     departure_time: str
     algorithm: Literal["baseline", "dijkstra", "astar", "mc_raptor"] = "astar"
     cache_mode: Literal["request", "shared"] = DEFAULT_ROUTING_CACHE_MODE
-    route_number: int = Field(default=3, ge=1, le=3)
+    include_alternatives: bool = False
     minimum_samples: int = Field(default=DEFAULT_MINIMUM_SAMPLES, ge=1)
     max_extra_minutes: int = Field(default=30, ge=0, le=120)
     search_timeout_seconds: float = Field(default=30.0, gt=0, le=120)

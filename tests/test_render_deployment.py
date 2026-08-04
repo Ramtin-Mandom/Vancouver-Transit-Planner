@@ -118,7 +118,7 @@ def test_snapshot_runtime_uses_no_database_and_is_ready(tmp_path, monkeypatch):
             assert client.get("/stops/search", params={"query": "alp"}).status_code == 200
             response = client.post("/routes/plan", json={
                 "origin_stop_id":"A", "destination_stop_id":"C",
-                "departure_time":"08:00:00", "route_number":1,
+                "departure_time":"08:00:00", "include_alternatives":False,
                 "minimum_samples":20, "max_extra_minutes":30,
                 "search_timeout_seconds":30, "reliability_effect":0.5,
                 "travel_time_effect":0.5, "transfer_effect":0,

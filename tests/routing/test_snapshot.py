@@ -9,6 +9,7 @@ from src.routing.snapshot import (RoutingSnapshot, SnapshotError, SnapshotPlanne
                                   SnapshotStopCatalog, build_snapshot_from_rows)
 import src.routing.snapshot as snapshot_module
 from src.routing.route_results import itinerary_identity
+from src.routing.snapshot_search import haversine_meters
 
 
 STOPS = [
@@ -119,8 +120,99 @@ def test_astar_and_dijkstra_agree_and_report_executed_algorithm(snapshot):
     assert dijkstra.alternatives[0].itinerary.arrival_time == astar.alternatives[0].itinerary.arrival_time
     assert dijkstra.diagnostics.counters.executed_algorithm == "dijkstra"
     assert astar.diagnostics.counters.executed_algorithm == "astar"
-    assert astar.diagnostics.counters.zero_heuristic_fallbacks > 0
+    assert astar.diagnostics.counters.geographic_heuristic_enabled is True
+    assert astar.diagnostics.counters.validated_maximum_speed_mps > 0
+    assert astar.diagnostics.counters.zero_heuristic_fallbacks == 0
+    assert astar.diagnostics.counters.heuristic_evaluations > 0
     assert astar.alternatives[0].itinerary.total_scheduled_travel_time == timedelta(minutes=35)
+
+
+def test_validated_speed_bound_covers_every_spatial_edge(snapshot):
+    arrays = snapshot.arrays
+    speed = snapshot.heuristic_metadata["maximum_speed_mps"]
+    for source, target, departure, arrival in zip(
+            arrays["from_stop"], arrays["to_stop"],
+            arrays["departure_seconds"], arrays["arrival_seconds"]):
+        distance = haversine_meters(
+            float(arrays["stop_lat"][source]), float(arrays["stop_lon"][source]),
+            float(arrays["stop_lat"][target]), float(arrays["stop_lon"][target]))
+        assert distance <= (int(arrival) - int(departure)) * speed
+
+
+@pytest.mark.parametrize("bad_coordinate", [None, float("nan"), 91.0])
+def test_invalid_coordinates_safely_disable_geographic_heuristic(
+        tmp_path, bad_coordinate):
+    stops = [dict(row) for row in STOPS]
+    stops[1]["stop_lat"] = bad_coordinate
+    path = tmp_path / "invalid-coordinate"
+    build_snapshot_from_rows(path, stops=stops, connections=CONNECTIONS)
+    loaded = RoutingSnapshot(path)
+    try:
+        result = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=7, minutes=55),
+            algorithm="astar", include_diagnostics=True)
+        counters = result.diagnostics.counters
+        assert counters.geographic_heuristic_enabled is False
+        assert "coordinate" in counters.heuristic_fallback_reason
+        assert result.alternatives
+    finally:
+        loaded.close()
+
+
+def test_distant_zero_duration_transfer_safely_disables_heuristic(tmp_path):
+    path = tmp_path / "zero-transfer"
+    build_snapshot_from_rows(
+        path, stops=STOPS, connections=CONNECTIONS,
+        transfers=[{"from_stop_id": "A", "to_stop_id": "C",
+                    "transfer_type": 2, "min_transfer_time": 0}],
+    )
+    loaded = RoutingSnapshot(path)
+    try:
+        assert loaded.heuristic_metadata["enabled"] is False
+        assert "transfer edge" in loaded.heuristic_metadata["reason"]
+    finally:
+        loaded.close()
+
+
+def test_missing_heuristic_metadata_is_compatible_zero_fallback(tmp_path):
+    import json
+
+    path = tmp_path / "old-v2"
+    build_snapshot_from_rows(path, stops=STOPS, connections=CONNECTIONS)
+    manifest_path = path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("geographic_heuristic")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    loaded = RoutingSnapshot(path)
+    try:
+        result = SnapshotPlanner(loaded).get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            algorithm="astar", include_diagnostics=True)
+        assert result.alternatives
+        assert not result.diagnostics.counters.geographic_heuristic_enabled
+        assert "no validated" in result.diagnostics.counters.heuristic_fallback_reason
+    finally:
+        loaded.close()
+
+
+def test_gtfs_after_midnight_astar_matches_dijkstra(tmp_path):
+    connections = [dict(CONNECTIONS[0], departure_seconds=87_000,
+                        arrival_seconds=87_600),
+                   dict(CONNECTIONS[1], departure_seconds=87_720,
+                        arrival_seconds=88_800)]
+    path = tmp_path / "after-midnight"
+    build_snapshot_from_rows(path, stops=STOPS, connections=connections)
+    loaded = RoutingSnapshot(path)
+    try:
+        planner = SnapshotPlanner(loaded)
+        results = [planner.get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(seconds=86_900),
+            algorithm=algorithm) for algorithm in ("dijkstra", "astar")]
+        assert results[0].alternatives[0].itinerary.arrival_time == timedelta(seconds=88_800)
+        assert (results[0].alternatives[0].itinerary.arrival_time
+                == results[1].alternatives[0].itinerary.arrival_time)
+    finally:
+        loaded.close()
 
 
 def _direct_alternative_snapshot(tmp_path, count, *, late=False):
@@ -175,11 +267,11 @@ def test_snapshot_returns_up_to_three_distinct_alternatives(
         planner = SnapshotPlanner(loaded)
         first = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
-            algorithm="dijkstra", route_number=3,
+            algorithm="dijkstra", route_number=3, include_alternatives=True,
         )
         repeated = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
-            algorithm="dijkstra", route_number=3,
+            algorithm="dijkstra", route_number=3, include_alternatives=True,
         )
         assert len(first.alternatives) == expected
         identities = [itinerary_identity(item.itinerary) for item in first.alternatives]
@@ -203,10 +295,12 @@ def test_snapshot_alternatives_obey_extra_window_and_preserve_fastest(tmp_path):
         dijkstra = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
             algorithm="dijkstra", route_number=3, max_extra_minutes=10,
+            include_alternatives=True,
         )
         astar = planner.get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8),
             algorithm="astar", route_number=3, max_extra_minutes=10,
+            include_alternatives=True,
         )
         assert len(dijkstra.alternatives) == 3
         assert all(
@@ -238,6 +332,7 @@ def test_slower_equal_route_is_dominated(tmp_path):
     try:
         result = SnapshotPlanner(loaded).get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+            include_alternatives=True,
         )
         assert [item.itinerary.legs[0].trip_id for item in result.alternatives] == ["FAST"]
     finally:
@@ -260,6 +355,7 @@ def test_equivalent_trip_instances_are_deduplicated(tmp_path):
     try:
         result = SnapshotPlanner(loaded).get_ranked_route_result(
             "A", "C", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+            include_alternatives=True,
         )
         assert len(result.alternatives) == 1
     finally:
@@ -288,6 +384,7 @@ def test_adjacent_bay_suffix_detour_is_dominated(tmp_path):
     try:
         result = SnapshotPlanner(loaded).get_ranked_route_result(
             "A", "B1", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+            include_alternatives=True,
         )
         assert [item.itinerary.legs[0].trip_id for item in result.alternatives] == ["DIRECT"]
     finally:
@@ -306,8 +403,35 @@ def test_snapshot_complete_search_is_invoked_once(snapshot, monkeypatch):
     monkeypatch.setattr(snapshot_module, "snapshot_search", counted)
     SnapshotPlanner(snapshot).get_ranked_route_result(
         "A", "C", date(2026, 8, 3), timedelta(hours=8), route_number=3,
+        include_alternatives=True,
     )
     assert calls == 1
+
+
+def test_single_route_mode_stops_at_first_destination_and_does_less_work(tmp_path):
+    loaded = _direct_alternative_snapshot(tmp_path, 4)
+    try:
+        planner = SnapshotPlanner(loaded)
+        single = planner.get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            include_alternatives=False, include_diagnostics=True,
+        )
+        alternatives = planner.get_ranked_route_result(
+            "A", "C", date(2026, 8, 3), timedelta(hours=8),
+            include_alternatives=True, include_diagnostics=True,
+        )
+        assert len(single.alternatives) == 1
+        assert len(alternatives.alternatives) == 3
+        assert (single.alternatives[0].itinerary
+                == alternatives.alternatives[0].itinerary)
+        assert single.diagnostics.counters.destination_labels_found == 1
+        assert alternatives.diagnostics.counters.destination_labels_found == 4
+        assert (single.diagnostics.counters.states_popped
+                < alternatives.diagnostics.counters.states_popped)
+        assert (single.diagnostics.counters.labels_created
+                <= alternatives.diagnostics.counters.labels_created)
+    finally:
+        loaded.close()
 
 
 def test_pickup_dropoff_transfer_and_maximum_transfer(tmp_path):
