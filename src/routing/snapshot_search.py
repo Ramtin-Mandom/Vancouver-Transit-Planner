@@ -142,6 +142,9 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
     deadline = clock() + timeout_seconds
     departures = arrays["departure_order"]
     offsets = arrays["departure_offsets"]
+    indexed_transfers = all(name in arrays for name in (
+        "transfer_order", "transfer_offsets", "same_stop_transfer_forbidden",
+        "same_stop_transfer_minimum"))
 
     def push(label: Label) -> None:
         nonlocal sequence
@@ -187,7 +190,14 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
             continue
 
         # Explicit GTFS transfer edges. Type 3 is forbidden.
-        for edge in np.flatnonzero(arrays["transfer_from"] == label.stop):
+        if indexed_transfers:
+            transfer_start = int(arrays["transfer_offsets"][label.stop])
+            transfer_end = int(arrays["transfer_offsets"][label.stop + 1])
+            transfer_edges = arrays["transfer_order"][transfer_start:transfer_end]
+        else:  # Compatible zero-copy fallback for v2/v3 artifacts.
+            transfer_edges = np.flatnonzero(arrays["transfer_from"] == label.stop)
+        for edge_value in transfer_edges:
+            edge = int(edge_value)
             stats.transfers += 1
             if int(arrays["transfer_type"][edge]) == 3 or not label.can_alight:
                 continue
@@ -210,13 +220,21 @@ def search(arrays: dict[str, np.ndarray], origin: int, destination: int,
             continuing = trip == label.trip
             if not continuing and not label.can_alight:
                 continue
-            same_stop_rules = np.flatnonzero(
-                (arrays["transfer_from"] == label.stop)
-                & (arrays["transfer_to"] == label.stop))
-            if not continuing and len(same_stop_rules):
-                if any(int(arrays["transfer_type"][edge]) == 3 for edge in same_stop_rules):
-                    continue
-                minimum = max(int(arrays["transfer_seconds"][edge]) for edge in same_stop_rules)
+            if not continuing:
+                if indexed_transfers:
+                    if int(arrays["same_stop_transfer_forbidden"][label.stop]):
+                        continue
+                    minimum = int(arrays["same_stop_transfer_minimum"][label.stop])
+                else:
+                    same_stop_rules = np.flatnonzero(
+                        (arrays["transfer_from"] == label.stop)
+                        & (arrays["transfer_to"] == label.stop))
+                    if any(int(arrays["transfer_type"][edge]) == 3
+                           for edge in same_stop_rules):
+                        continue
+                    minimum = max(
+                        (int(arrays["transfer_seconds"][edge])
+                         for edge in same_stop_rules), default=0)
                 if depart < reached + minimum:
                     continue
             if not continuing and int(arrays["pickup_type"][connection]) != 0:

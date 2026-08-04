@@ -364,6 +364,29 @@ def build_snapshot_from_rows(
             [int(row.get("transfer_type") or 0) for row in transfer_rows], dtype="uint8")
         arrays["transfer_seconds"] = np.asarray(
             [int(row.get("min_transfer_time") or 0) for row in transfer_rows], dtype="uint32")
+        transfer_index_dtype = np.dtype(
+            "uint32" if len(transfer_rows) <= np.iinfo(np.uint32).max else "uint64")
+        arrays["transfer_order"] = np.argsort(
+            arrays["transfer_from"], kind="stable").astype(
+                transfer_index_dtype, copy=False)
+        transfer_counts = np.bincount(
+            arrays["transfer_from"].astype(np.int64), minlength=len(stop_ids))
+        arrays["transfer_offsets"] = np.concatenate(
+            ([0], np.cumsum(transfer_counts))).astype(transfer_index_dtype)
+        same_stop_forbidden = np.zeros(len(stop_ids), dtype="uint8")
+        same_stop_minimum = np.zeros(len(stop_ids), dtype="uint32")
+        for edge, (source, target) in enumerate(zip(
+                arrays["transfer_from"], arrays["transfer_to"])):
+            source_index, target_index = int(source), int(target)
+            if source_index != target_index:
+                continue
+            if int(arrays["transfer_type"][edge]) == 3:
+                same_stop_forbidden[source_index] = 1
+            same_stop_minimum[source_index] = max(
+                int(same_stop_minimum[source_index]),
+                int(arrays["transfer_seconds"][edge]))
+        arrays["same_stop_transfer_forbidden"] = same_stop_forbidden
+        arrays["same_stop_transfer_minimum"] = same_stop_minimum
         index_dtype = np.dtype("uint32" if count <= np.iinfo(np.uint32).max else "uint64")
         arrays["scan_order"] = np.argsort(
             arrays["departure_seconds"], kind="stable"
@@ -466,6 +489,16 @@ class RoutingSnapshot:
                 raise SnapshotError(f"snapshot array {name} has invalid length")
         if len(self.arrays["departure_offsets"]) != len(self.arrays["stop_ids"]) + 1:
             raise SnapshotError("invalid departure offsets")
+        if "transfer_offsets" in self.arrays:
+            if len(self.arrays["transfer_offsets"]) != len(self.arrays["stop_ids"]) + 1:
+                raise SnapshotError("invalid transfer offsets")
+            if int(self.arrays["transfer_offsets"][-1]) != len(self.arrays["transfer_from"]):
+                raise SnapshotError("transfer offsets do not cover transfer records")
+            if (len(self.arrays.get("same_stop_transfer_forbidden", ()))
+                    != len(self.arrays["stop_ids"])
+                    or len(self.arrays.get("same_stop_transfer_minimum", ()))
+                    != len(self.arrays["stop_ids"])):
+                raise SnapshotError("same-stop transfer index has invalid length")
         limits = {"from_stop": len(self.arrays["stop_ids"]), "to_stop": len(self.arrays["stop_ids"]),
                   "trip_index": len(self.arrays["trip_ids"]), "route_index": len(self.arrays["route_ids"]),
                   "service_index": len(self.arrays["service_ids"])}

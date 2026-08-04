@@ -37,6 +37,9 @@ def test_build_load_manifest_and_autocomplete(snapshot):
     assert snapshot.manifest["counts"] == {"stops":3,"routes":1,"trips":2,"connections":2}
     assert [stop.stop_id for stop in snapshot.search_stops("ALP")] == ["A"]
     assert isinstance(snapshot.arrays["from_stop"], np.memmap)
+    assert len(snapshot.arrays["transfer_offsets"]) == len(STOPS) + 1
+    assert int(snapshot.arrays["transfer_offsets"][-1]) == len(
+        snapshot.arrays["transfer_from"])
 
 
 def test_array_planner_and_concurrent_reads(snapshot):
