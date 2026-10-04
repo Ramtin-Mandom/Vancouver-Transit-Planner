@@ -41,11 +41,12 @@ The Blueprint cannot derive these values before service creation:
 
 - `API_CORS_ORIGINS`: deployed frontend origin, without invented wildcards.
 - `VITE_API_BASE_URL`: deployed backend origin.
-- `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`: a PostgreSQL source
-  used by the backend build command to generate the snapshot.
+- No database connection variables are required for deployment.
 
-The database credentials are build-time inputs. The running snapshot API does
-not use PostgreSQL for requests.
+The build restores and validates `data/routing_snapshot.zip`, committed with the
+repository. Neither build nor runtime connects to PostgreSQL. Old Render `DB_*`
+variables can be removed. The archive must be included in the deployed commit;
+an ignored local snapshot directory is not available on Render.
 
 Configured non-secret values:
 
@@ -54,7 +55,6 @@ ROUTING_SNAPSHOT_PATH=data/routing_snapshot
 ROUTING_SNAPSHOT_REQUIRED=true
 ROUTING_SNAPSHOT_DEVELOPMENT_FALLBACK=false
 CACHE_WARMUP_ENABLED=false
-ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB=450
 ```
 
 ## Health checks

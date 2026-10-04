@@ -89,7 +89,8 @@ flowchart LR
 
 PostgreSQL is used for GTFS ingestion, reliability aggregation, integration
 tests, and snapshot generation. The deployed snapshot API does not query
-PostgreSQL while serving stop searches or route requests.
+PostgreSQL while serving stop searches or route requests. Render builds restore
+the repository snapshot archive and do not need PostgreSQL either.
 
 See [Architecture](docs/architecture.md) and
 [Data pipeline](docs/data-pipeline.md) for the detailed flow.
@@ -287,8 +288,9 @@ npm run audit:production
 ## Data and attribution
 
 The project downloads TransLink static GTFS and can collect TransLink
-GTFS-Realtime observations. Full feeds, extracted tables, and generated snapshots
-are not tracked in Git.
+GTFS-Realtime observations. Full feeds and extracted tables are not tracked in Git.
+The deployment snapshot is packaged in `data/routing_snapshot.zip` so Render
+can deploy without a database.
 
 > Route and arrival data used in this product or service is provided by
 > permission of TransLink. TransLink assumes no responsibility for the accuracy

@@ -1,7 +1,8 @@
 # Transit data policy and attribution
 
-Full GTFS archives, extracted feeds, and generated routing snapshots are build
-inputs or artifacts and are not stored in Git. Download the current static feed:
+Full GTFS archives, extracted feeds, and uncompressed snapshots remain local.
+The deployment archive `routing_snapshot.zip` is stored in Git. To optionally
+refresh the saved dataset, download the current static feed:
 
 ```powershell
 python -m scripts.download_gtfs
@@ -21,7 +22,7 @@ feed committed to this repository.
 
 The feed previously tracked here identified itself as TransLink version
 `26JUN_20260717`, covering 2026-06-08 through 2026-09-06. This metadata is kept
-for provenance only; it is not a usable timetable fixture.
+for provenance; the deployment archive reuses those saved trips by time of day.
 
 "Route and arrival data used in this product or service is provided by
 permission of TransLink. TransLink assumes no responsibility for the accuracy
@@ -35,3 +36,19 @@ This independent portfolio project is not affiliated with, sponsored by, or
 endorsed by TransLink. The repository's MIT licence applies to project code; it
 does not automatically license TransLink data, OpenStreetMap tiles, or other
 third-party material.
+
+
+## Offline deployment artifact
+
+`routing_snapshot.zip` is the versioned deployment dataset, containing public
+GTFS routing arrays and 1,939 aggregate route/direction/time-window reliability
+profiles. It contains no database credentials or raw observations. Source feed:
+`26JUN_20260717`; snapshot created August 4, 2026 (format 2).
+
+Render restores this archive instead of connecting to PostgreSQL. Calendar dates
+do not expire the public time-of-day planner. Keep this file in Git when deploying.
+The uncompressed `routing_snapshot/` directory remains ignored.
+
+To update the dataset, build and validate a new snapshot with the existing offline
+builder, then replace this archive with its `manifest.json` and `.npy` files at the
+ZIP root. No data refresh is needed just to deploy code changes.

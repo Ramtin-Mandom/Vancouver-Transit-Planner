@@ -18,19 +18,7 @@ services:
         value: "false"
       - key: CACHE_WARMUP_ENABLED
         value: "false"
-      - key: ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB
-        value: "450"
       - key: API_CORS_ORIGINS
-        sync: false
-      - key: DB_HOST
-        sync: false
-      - key: DB_PORT
-        sync: false
-      - key: DB_NAME
-        sync: false
-      - key: DB_USER
-        sync: false
-      - key: DB_PASSWORD
         sync: false
 
   - type: web

@@ -37,6 +37,9 @@ def render_shell_fixture(tmp_path):
     wrapper = tmp_path / "python-wrapper"
     wrapper.write_text(
         """#!/usr/bin/env bash
+if [[ "$1 $2" == "-m scripts.restore_routing_snapshot" ]]; then
+  exec "$REAL_PYTHON" -m scripts.build_routing_snapshot --fixture-json "$ROUTING_SNAPSHOT_FIXTURE_PATH" --output "$ROUTING_SNAPSHOT_PATH"
+fi
 if [[ "$1 $2" == "-m pip" ]]; then exit 0; fi
 if [[ "${FAIL_VALIDATION:-}" == "1" && "$1 $2" == "-m scripts.validate_routing_snapshot" ]]; then exit 42; fi
 exec "$REAL_PYTHON" "$@"
@@ -61,24 +64,6 @@ def test_successful_render_build_workflow_with_fixture(tmp_path, render_shell_fi
     assert (tmp_path / "built-snapshot" / "manifest.json").is_file()
     assert "secret-not-logged" not in result.stdout + result.stderr
     assert "completed successfully" in result.stdout
-
-
-def test_render_build_fails_without_database_configuration(
-    tmp_path, render_shell_fixture
-):
-    fixture, wrapper = render_shell_fixture
-    environment = _render_environment(tmp_path, fixture, wrapper)
-    environment.pop("DB_PASSWORD")
-    result = subprocess.run(
-        ["/bin/bash", "scripts/render_build.sh"],
-        cwd=Path(__file__).parents[1],
-        env=environment,
-        text=True,
-        capture_output=True,
-    )
-    assert result.returncode != 0
-    assert "DB_PASSWORD is not set" in result.stderr
-    assert not (tmp_path / "built-snapshot").exists()
 
 
 def test_render_validation_failure_stops_build(tmp_path, render_shell_fixture):
@@ -108,11 +93,11 @@ def test_blueprint_and_build_script_are_production_safe():
     assert "runtime: static" in blueprint
     assert "VITE_API_BASE_URL" in blueprint
     assert "API_CORS_ORIGINS" in blueprint
-    assert "DB_PASSWORD\n        sync: false" in blueprint
+    assert "DB_PASSWORD" not in blueprint
     assert "set -euo pipefail" in build
     assert "uvicorn" not in build
-    assert "DB_PASSWORD" in build
-    assert "${!variable" in build  # checks presence, never echoes the value
+    assert "DB_PASSWORD" not in build
+    assert "scripts.restore_routing_snapshot" in build
 
 
 def test_snapshot_runtime_uses_no_database_and_is_ready(tmp_path, monkeypatch):
@@ -184,7 +169,9 @@ def test_ready_returns_503_when_routing_is_unavailable():
     app.state.services = None
 
 
-def test_expired_snapshot_remains_ready_and_routes_without_calendar_filtering(tmp_path, monkeypatch):
+def test_expired_snapshot_remains_ready_and_routes_without_calendar_filtering(
+    tmp_path, monkeypatch
+):
     from datetime import date
 
     path = tmp_path / "expired"

@@ -6,20 +6,8 @@ SNAPSHOT_PATH="${ROUTING_SNAPSHOT_PATH:-data/routing_snapshot}"
 
 "$PYTHON_BIN" -m pip install -r requirements.txt
 
-required_database_variables=(DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD)
-for variable in "${required_database_variables[@]}"; do
-  if [[ -z "${!variable:-}" ]]; then
-    echo "ERROR: required database environment variable ${variable} is not set." >&2
-    exit 1
-  fi
-done
-echo "Required database environment variables are configured."
-
-build_arguments=(--output "$SNAPSHOT_PATH")
-if [[ -n "${ROUTING_SNAPSHOT_FIXTURE_PATH:-}" ]]; then
-  build_arguments+=(--fixture-json "$ROUTING_SNAPSHOT_FIXTURE_PATH")
-fi
-"$PYTHON_BIN" -m scripts.build_routing_snapshot "${build_arguments[@]}"
+# Deploy the versioned offline artifact; no database is required during builds.
+"$PYTHON_BIN" -m scripts.restore_routing_snapshot --output "$SNAPSHOT_PATH"
 "$PYTHON_BIN" -m scripts.validate_routing_snapshot "$SNAPSHOT_PATH"
 
 manifest="$SNAPSHOT_PATH/manifest.json"
