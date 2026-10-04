@@ -91,6 +91,7 @@ def search(
     collect_alternatives: bool = True,
     heuristic_metadata: dict[str, Any] | None = None,
     clock=None,
+    network_bounds=None,
 ) -> tuple[list[Label], list[int], SearchStats]:
     """Run Dijkstra or correctness-safe geographic A* on the state graph."""
     if algorithm not in {"dijkstra", "astar"}:
@@ -99,6 +100,8 @@ def search(
         raise ValueError("search timeout must be positive")
     if max_labels < 1 or candidate_limit < 1:
         raise ValueError("label and candidate limits must be positive")
+    # ndarray views retain mmap backing without memmap's per-scalar dispatch.
+    arrays = {name: np.asarray(value) for name, value in arrays.items()}
     clock = clock or perf_counter
     active = active_services(arrays, service_date)
     horizon = departure + search_horizon_seconds
@@ -137,12 +140,15 @@ def search(
     destination_lon = float(arrays["stop_lon"][destination])
 
     def estimate(stop: int) -> int:
+        network_value = 0
+        if network_bounds is not None and math.isfinite(network_bounds[stop]):
+            network_value = int(network_bounds[stop])
         if not stats.heuristic_enabled:
-            return 0
+            return network_value
         cached = heuristic_cache.get(stop)
         if cached is not None:
             stats.heuristic_cache_hits += 1
-            return cached
+            return max(cached, network_value)
         try:
             latitude = float(arrays["stop_lat"][stop])
             longitude = float(arrays["stop_lon"][stop])
@@ -168,7 +174,7 @@ def search(
             value = 0
         heuristic_cache[stop] = value
         stats.heuristics += 1
-        return value
+        return max(value, network_value)
 
     queue.append((departure + estimate(origin), departure, 0, 0))
     sequence = 1
@@ -178,6 +184,8 @@ def search(
     deadline = clock() + timeout_seconds
     departures = arrays["departure_order"]
     offsets = arrays["departure_offsets"]
+    stop_departures: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    boarding_frontier: dict[int, dict[int, int]] = {}
     indexed_transfers = all(
         name in arrays
         for name in (
@@ -190,6 +198,10 @@ def search(
 
     def push(label: Label) -> None:
         nonlocal sequence
+        if network_bounds is not None and (
+            not math.isfinite(network_bounds[label.stop])
+        ):
+            return
         key = (label.stop, label.trip, label.transfers, label.can_alight)
         prior = best.get(key)
         if prior is not None and prior <= label.arrival:
@@ -204,7 +216,11 @@ def search(
         labels.append(label)
         index = len(labels) - 1
         heuristic = estimate(label.stop)
-        if algorithm == "astar" and not stats.heuristic_enabled:
+        if (
+            algorithm == "astar"
+            and not stats.heuristic_enabled
+            and network_bounds is None
+        ):
             stats.zero_fallbacks += 1
         heapq.heappush(
             queue, (label.arrival + heuristic, label.arrival, sequence, index)
@@ -276,9 +292,34 @@ def search(
         if stats.resource_limit_reached:
             break
 
-        start, end = int(offsets[label.stop]), int(offsets[label.stop + 1])
-        for position in range(start, end):
-            connection = int(departures[position])
+        indexed = stop_departures.get(label.stop)
+        if indexed is None:
+            start, end = int(offsets[label.stop]), int(offsets[label.stop + 1])
+            ordered = departures[start:end]
+            times = arrays["departure_seconds"][ordered]
+            end = int(np.searchsorted(times, horizon, side="right"))
+            indexed = (ordered[:end], times[:end])
+            stop_departures[label.stop] = indexed
+        ordered, times = indexed
+        start = int(np.searchsorted(times, reached, side="left"))
+        candidates = ordered[start:]
+        if not collect_alternatives:
+            # For earliest-arrival search, an earlier boardable label with no
+            # more transfers can make every new boarding this label can make.
+            # Staying on the current trip must still be expanded: it does not
+            # consume a transfer and can pass a no-pickup stop.
+            boardings = label.transfers + int(label.trip >= 0)
+            frontier = boarding_frontier.setdefault(label.stop, {})
+            dominated = not label.can_alight or any(
+                count <= boardings and arrival <= reached
+                for count, arrival in frontier.items()
+            )
+            if dominated:
+                candidates = candidates[arrays["trip_index"][candidates] == label.trip]
+            else:
+                frontier[boardings] = min(frontier.get(boardings, reached), reached)
+        for connection_value in candidates:
+            connection = int(connection_value)
             depart = int(arrays["departure_seconds"][connection])
             if depart < reached:
                 continue

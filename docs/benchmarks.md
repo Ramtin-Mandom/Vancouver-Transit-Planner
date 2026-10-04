@@ -78,3 +78,46 @@ but different answer is not treated as an optimization.
 - Record startup/loading, search, total, labels, connections, transfers,
   heuristic calculations, and cache hits.
 - Benchmark on production-equivalent hardware before making latency claims.
+
+
+## Limited-CPU snapshot optimization (October 4, 2026)
+
+Tested the repository's format-2 snapshot on Windows/Python 3.12.11, using
+all calendars (time-of-day mode), an 08:00 departure, and the default single
+route. Before optimization, direct backend searches for Waterfront to SFU and
+Metrotown to UBC both hit the 30-second deadline. No browser was involved.
+
+After optimization, three requests per pair through FastAPI TestClient gave:
+
+| Stops | Route | Median API seconds | Median CPU seconds | Arrival |
+| --- | --- | ---: | ---: | --- |
+| 646 → 378 | Dunbar short trip | 0.012 | 0.016 | 08:09:55 |
+| 9069 → 1875 | Waterfront → SFU | 0.568 | 0.563 | 09:20:00 |
+| 2717 → 12358 | Metrotown → UBC | 0.359 | 0.359 | 08:56:00 |
+
+Peak process working set including FastAPI and startup was 161 MiB. Network
+index construction took approximately 0.11 seconds in a separate direct run.
+These measurements include local API handling, not Internet latency, Render
+cold starts, or a real 0.1-CPU quota. A simple 10x CPU-time scaling would suggest
+roughly 5.6 and 3.6 seconds for the two long searches, but is not a deployment
+latency guarantee. Concurrent requests will share the same limited CPU.
+
+Changes: zero-copy ndarray views over mmap data; binary searches over sorted
+stop departures; removal of dominated new boardings for single-route search;
+and an admissible reverse-network travel-time lower bound for A*. This bound
+ignores waiting and restrictions, so it never overestimates remaining time.
+Continuing on the current vehicle is preserved even when new boarding is dominated.
+The network index is shared across requests; no unbounded destination cache exists.
+
+Alternative enumeration retains its original boarding behavior and does not use
+the new A* bound. It can still time out on long trips under limited CPU. Default
+single-route requests benefit most. Deadlines and resource limits are unchanged.
+
+Reproduce a direct three-run benchmark (service date defaults to none):
+
+```powershell
+python -m scripts.benchmark_snapshot data/routing_snapshot --origin 9069 --destination 1875 --departure-seconds 28800 --iterations 3 --single-only --algorithm astar
+```
+
+The seeded differential test compares 500 single-route searches to unpruned
+alternative enumeration's earliest arrival, as well as A* against Dijkstra.

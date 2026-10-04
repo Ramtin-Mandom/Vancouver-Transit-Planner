@@ -105,6 +105,24 @@ def test_seeded_fifo_astar_dijkstra_differential(tmp_path):
             origin = snapshot.stop_index(f"S{source}")
             destination = snapshot.stop_index(f"S{target}")
             departure = int(requested.total_seconds())
+            # Alternative enumeration deliberately retains the unpruned boarding
+            # search, providing an independent oracle for single-route dominance.
+            oracle_labels, oracle_winners, oracle_stats = search(
+                snapshot.arrays,
+                origin,
+                destination,
+                departure,
+                None,
+                algorithm="dijkstra",
+                collect_alternatives=True,
+                max_extra_seconds=0,
+            )
+            assert not oracle_stats.timed_out
+            assert bool(oracle_winners) == bool(astar.alternatives)
+            if oracle_winners:
+                assert oracle_labels[oracle_winners[0]].arrival == int(
+                    astar.alternatives[0].itinerary.arrival_time.total_seconds()
+                )
             for algorithm in ("dijkstra", "astar"):
                 labels, winners, stats = search(
                     snapshot.arrays,

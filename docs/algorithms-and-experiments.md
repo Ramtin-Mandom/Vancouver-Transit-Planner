@@ -11,26 +11,67 @@ response rather than reaching an incompatible router.
 Dijkstra uses scheduled arrival cost for queue priority and result construction.
 It reads only connections and transfers reachable from the active stop.
 
-### Validated snapshot A*
+### A* with network travel-time bounds
 
-For single-route searches, A* can add a request-local cached estimate:
+Single-route A* uses a lower bound computed from the saved transit network.
+`NetworkBounds` in `src/routing/snapshot_bounds.py` builds a reverse graph once
+per planner instance. For each directed stop pair, it keeps the shortest ride
+or transfer duration across all saved connections. This compact graph is shared
+by requests; it does not duplicate the full timetable as Python objects.
+
+For each destination, reverse Dijkstra computes the minimum remaining travel
+time from every stop. It ignores departure times, waiting, service calendars,
+pickup/drop-off restrictions, and transfer limits. Even forbidden transfer
+edges are included in this relaxed graph. Removing these constraints can only
+make a journey faster, so the result never overestimates a feasible journey:
 
 ```text
-h(stop) = Haversine distance(stop, destination) / validated maximum graph speed
+h_network(stop) = shortest remaining ride + transfer duration, ignoring waiting
+queue_priority = actual_arrival_time + h(stop)
 ```
 
-The builder checks every positive-distance transit and transfer edge. Missing or
-invalid coordinates use zero for that stop. A zero/negative-duration spatial
-edge, invalid speed bound, or older metadata disables the geographic heuristic
-for the request. Actual arrivals, dominance, reconstruction, and durations
-always use `g`, never `g + h`.
+If validated geographic metadata is available, the planner also calculates the
+existing Haversine-distance / maximum-speed bound and uses the larger of the
+two bounds. Both are lower bounds, so their maximum is still admissible. Missing
+geographic metadata disables only the geographic component: format-2 snapshots
+still benefit from the network bound. Stops with no path to the destination in
+the relaxed graph can be skipped entirely.
+
+Actual arrival times, reconstruction, and reported durations use the scheduled
+cost, never the heuristic-adjusted queue priority. The destination-distance
+array is request-local; there is no growing cache of destinations. Diagnostics
+expose `network_heuristic_enabled` separately from
+`geographic_heuristic_enabled`.
+
+### Reducing work in the search loop
+
+Three complementary changes reduce CPU work in `snapshot_search.py`:
+
+- **Array views:** ordinary NumPy array views retain the memory-mapped backing
+  without the extra per-scalar dispatch of the `memmap` subclass. This does not
+  copy all routing arrays into memory.
+- **Departure lookup:** a request-local index gathers sorted departure times
+  for each visited stop. Binary search skips departures before the label's
+  arrival and bounds the slice by the existing departure horizon. The temporary
+  indexes do allocate memory, but disappear when the request completes.
+- **Boarding dominance:** for single-route searches, an earlier boardable label
+  at the same stop with no greater transfer cost can cover later new boardings.
+  Dominated labels still expand connections on their current trip: remaining
+  aboard does not consume a transfer and may pass a no-pickup stop. This pruning
+  applies to both single-route Dijkstra and A*.
+
+These changes preserve earliest-arrival search. They do not turn the single
+route into a globally reliability-optimal search; reliability ranking still
+operates on the candidates the search produces.
 
 ### Alternatives
 
 `include_alternatives: false` returns at most one route. `true` returns at most
 three public alternatives. Alternatives use arrival-ordered zero-heuristic
-collection because geographic A* ordering is not used to prove the multi-route
-candidate window.
+collection because heuristic queue ordering is not used to prove the multi-route
+candidate window. Neither the network bound nor single-route boarding dominance
+is applied to alternative enumeration. Array views and departure indexing still
+apply, but long alternative searches may exceed a small CPU budget.
 
 The search has a generous candidate bound. Diagnostics distinguish complete
 collection from candidate truncation. Ranking applies reliability, travel-time,
@@ -79,3 +120,18 @@ Exhaustion produces timeout/resource diagnostics, never a misleading empty
 route response. Path reconstruction validates connection continuity in tests and
 snapshot validation workflows rather than adding a full validation pass to every
 production request.
+
+
+## Validation and measured impact
+
+The seeded differential test compares 500 single-route searches with the earliest
+arrival from alternative enumeration, which retains the unpruned boarding search.
+It also compares A* with Dijkstra. Separate network-bound tests cover parallel
+edges, directed reachability, transfers, zero-duration edges, and empty networks.
+
+On the saved production snapshot, two long trips that previously exceeded a
+30-second local backend deadline completed in median API times of 0.568 seconds
+(Waterfront to SFU) and 0.359 seconds (Metrotown to UBC). Peak process working set
+including FastAPI was about 161 MiB. These are local Windows measurements, not
+measurements under Render's CPU quota. See [Benchmarks](benchmarks.md) for stop
+IDs, departure times, repeat counts, commands, and deployment limitations.

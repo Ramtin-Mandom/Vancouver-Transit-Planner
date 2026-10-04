@@ -63,11 +63,12 @@ inspect each alternative independently on the map.
 - Snapshot artifacts store compact NumPy arrays for stops, connections, service
   calendars, transfers, and reliability profiles.
 - Transfer records are indexed by origin stop instead of scanned globally.
-- Snapshot A* uses a request-local cached Haversine travel-time heuristic only
-  when the snapshot proves a safe maximum spatial-edge speed. Invalid or older
-  metadata falls back to zero without invalidating routing.
+- Single-route A* uses reverse-network travel-time bounds, including with older
+  snapshots. Validated geographic bounds can strengthen the estimate.
+- Binary-search departure lookup, zero-copy array views, and single-route
+  boarding dominance reduce repeated work on limited CPUs.
 - Alternative collection stays arrival-ordered, so it deliberately does not use
-  geographic A* queue ordering.
+  A* queue ordering or single-route boarding dominance.
 - Search deadlines, label limits, and candidate limits produce explicit
   diagnostics or errors instead of silently returning “no routes.”
 - GTFS times beyond `24:00:00` remain valid service-day times.
@@ -103,8 +104,8 @@ source.
 
 The active production planner is `SnapshotPlanner`. Its public API accepts:
 
-- `astar` — the default; uses the validated geographic heuristic for single
-  route searches when safe metadata is available.
+- `astar` — the default; uses network travel-time lower bounds for single-route
+  searches, strengthened by validated geographic bounds when available.
 - `dijkstra` — the same snapshot search with a zero heuristic.
 
 `baseline`, the database-backed A* implementation, MC-RAPTOR, cache variants,
@@ -312,8 +313,10 @@ See [Data policy and attribution](data/README.md).
   levels; the response reports the level actually selected.
 - Saved timetables do not expire and do not claim to represent current service.
 - Alternative search is bounded and can report candidate truncation internally.
-- Geographic A* acceleration requires valid coordinates and a provable global
-  speed bound; otherwise it safely becomes zero-heuristic search.
+- Geographic acceleration requires valid coordinates and a provable global
+  speed bound. Network lower bounds remain available without those metadata.
+- Long alternative searches can still time out on limited CPUs; the largest
+  optimization gains apply to the default single-route mode.
 - OpenStreetMap tiles and Google Fonts are runtime network dependencies. The UI
   preserves fallback fonts and reports tile failure.
 - Production URLs, CORS origins, and secrets require operator configuration.

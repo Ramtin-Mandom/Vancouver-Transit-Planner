@@ -13,6 +13,7 @@ from src.routing.snapshot import (
     RoutingSnapshot,
     SnapshotPlanner,
     _geographic_heuristic_metadata,
+    _rss_bytes,
 )
 
 
@@ -21,7 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("path", type=Path, help="routing snapshot directory")
     parser.add_argument("--origin", help="origin stop ID")
     parser.add_argument("--destination", help="destination stop ID")
-    parser.add_argument("--service-date", type=date.fromisoformat, default=date.today())
+    parser.add_argument("--service-date", type=date.fromisoformat, default=None)
+    parser.add_argument("--single-only", action="store_true")
+    parser.add_argument("--algorithm", choices=("astar", "dijkstra"))
     parser.add_argument("--iterations", type=int, default=7)
     parser.add_argument("--departure-seconds", type=int, default=28_800)
     parser.add_argument("--timeout-seconds", type=float, default=30.0)
@@ -78,8 +81,10 @@ def main() -> None:
                 )
             planner = SnapshotPlanner(snapshot)
             runs = {}
-            for alternatives in (False, True):
-                for algorithm in ("dijkstra", "astar"):
+            for alternatives in (False,) if args.single_only else (False, True):
+                for algorithm in (
+                    (args.algorithm,) if args.algorithm else ("dijkstra", "astar")
+                ):
                     samples = [
                         timed_route(planner, args, algorithm, alternatives)
                         for _ in range(args.iterations)
@@ -95,6 +100,7 @@ def main() -> None:
                         "connections_examined": counters.connections_examined,
                         "transfer_records_examined": counters.transfer_edges_examined,
                         "heuristic_enabled": counters.geographic_heuristic_enabled,
+                        "network_heuristic_enabled": counters.network_heuristic_enabled,
                         "heuristic_values_computed": counters.heuristic_evaluations,
                         "heuristic_cache_hits": counters.heuristic_cache_hits,
                         "candidate_collection_complete": counters.candidate_collection_complete,
@@ -102,6 +108,7 @@ def main() -> None:
                         "termination_reason": counters.termination_reason,
                     }
             report["runs"] = runs
+        report["peak_rss_bytes"] = _rss_bytes()
         print(json.dumps(report, indent=2))
     finally:
         snapshot.close()

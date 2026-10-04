@@ -889,6 +889,9 @@ class SnapshotPlanner:
 
     def __init__(self, snapshot: RoutingSnapshot):
         self.snapshot = snapshot
+        from .snapshot_bounds import NetworkBounds
+
+        self.network_bounds = NetworkBounds(snapshot.arrays)
 
     @staticmethod
     def _semantic_identity(alternative: ReliableAlternative) -> tuple:
@@ -975,6 +978,11 @@ class SnapshotPlanner:
             collect_alternatives=include_alternatives,
             heuristic_metadata=self.snapshot.heuristic_metadata,
             clock=_.get("_clock"),
+            network_bounds=(
+                self.network_bounds.to(destination)
+                if requested_algorithm == "astar" and not include_alternatives
+                else None
+            ),
         )
         if stats.timed_out:
             raise ReliableSearchTimeout(
@@ -1106,6 +1114,8 @@ class SnapshotPlanner:
                     transfer_edges_examined=stats.transfers,
                     heuristic_evaluations=stats.heuristics,
                     zero_heuristic_fallbacks=stats.zero_fallbacks,
+                    network_heuristic_enabled=requested_algorithm == "astar"
+                    and not include_alternatives,
                     geographic_heuristic_enabled=stats.heuristic_enabled,
                     validated_maximum_speed_mps=stats.maximum_speed_mps,
                     heuristic_fallback_reason=stats.heuristic_fallback_reason,
