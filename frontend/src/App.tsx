@@ -54,8 +54,6 @@ export default function App() {
         invalid_input: "Review the trip details and try again.",
         timeout: "The route search timed out. Try again with fewer alternatives.",
         planner_not_ready: "The planner is not ready yet. Please try again shortly.",
-        feed_expired:
-          "Transit schedule data has expired. Routes are unavailable until it is refreshed.",
         network: "Unable to reach the planner. Check your connection and try again."
       };
       setError(
@@ -78,7 +76,8 @@ export default function App() {
             <h1>Choose a route that is fast—and likely to be on time.</h1>
             <p>
               Compare scheduled travel time with reliability estimated from historical transit
-              observations.
+              observations grouped by time of day. This reusable timetable combines saved weekday
+              and weekend services and does not represent service on a specific date.
             </p>
           </div>
           <div className="introProof" aria-label="Planner capabilities">
@@ -121,8 +120,7 @@ export default function App() {
               <span>01</span>
               <strong>Search schedules</strong>
               <p>
-                Available routes are found from the imported GTFS schedule for your selected service
-                day.
+                Available routes are found from the imported saved GTFS timetable by departure time.
               </p>
             </div>
             <div>

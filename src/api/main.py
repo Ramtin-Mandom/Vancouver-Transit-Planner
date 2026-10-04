@@ -7,7 +7,6 @@ import logging
 import os
 from contextlib import asynccontextmanager, suppress
 from dataclasses import replace
-from datetime import date
 from time import perf_counter
 from typing import Annotated
 
@@ -209,22 +208,6 @@ def ready(request: Request) -> JSONResponse:
         )
     if services.snapshot is not None:
         manifest = services.snapshot.manifest
-        service_range = manifest.get("service_range", {})
-        latest = service_range.get("latest_date")
-        today = current_service_date()
-        if latest and today > date.fromisoformat(latest):
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "ready": False,
-                    "snapshot_loaded": True,
-                    "reason": f"GTFS feed expired on {latest}; refresh the feed and rebuild the snapshot",
-                    "service_range": service_range,
-                },
-            )
-        warning = None
-        if latest and (date.fromisoformat(latest) - today).days <= 30:
-            warning = f"GTFS feed expires on {latest}"
         return JSONResponse(
             status_code=200,
             content={
@@ -233,8 +216,7 @@ def ready(request: Request) -> JSONResponse:
                 "snapshot_version": manifest["format_version"],
                 "source_version": manifest.get("source_version"),
                 "counts": manifest["counts"],
-                "service_range": service_range,
-                "warning": warning,
+                "schedule_mode": "time_of_day",
             },
         )
     if services.warmup is None:
@@ -300,15 +282,9 @@ def plan_routes(
         raise ServicesUnavailable(
             services.routing_unavailable_reason or "routing services are unavailable"
         )
-    # The public API does not expose future-date planning yet. Timetable logic
-    # still receives an internal Vancouver-local GTFS service date.
-    service_date = current_service_date()
-    if services.snapshot is not None:
-        latest = services.snapshot.manifest.get("service_range", {}).get("latest_date")
-        if latest and service_date > date.fromisoformat(latest):
-            raise ServicesUnavailable(
-                f"GTFS feed expired on {latest}; refresh the feed and rebuild the snapshot"
-            )
+    # Production snapshots reuse all saved trips without calendar filtering.
+    # The legacy database development planner retains its dated contract.
+    service_date = None if services.snapshot is not None else current_service_date()
     origin = services.transit_database.find_stop(request.origin_stop_id)
     if origin is None:
         raise HTTPException(
@@ -365,6 +341,5 @@ def plan_routes(
         result,
         origin,
         destination,
-        service_date,
         departure_time,
     )

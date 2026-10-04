@@ -60,8 +60,8 @@ ROUTING_SNAPSHOT_BUILD_MAX_RSS_MB=450
 ## Health checks
 
 - `GET /health`: process liveness; `200` while FastAPI is running.
-- `GET /ready`: routing readiness; `200` only with an active compatible and
-  unexpired planner, otherwise `503`.
+- `GET /ready`: routing readiness; `200` only with an active compatible
+  planner, otherwise `503`.
 
 Render checks `/ready` because accepting HTTP is insufficient if routing cannot
 serve requests.
@@ -77,7 +77,7 @@ curl "https://BACKEND.example/stops/search?query=Gran&limit=5"
 ```
 
 Verify that `/ready` reports `snapshot_loaded: true`, a supported snapshot
-version, current service range, and no expiration error. Then make one real route
+version, and `schedule_mode: "time_of_day"`. Then make one real route
 request from the deployed frontend and confirm the browser has no CORS failure.
 
 ## Runtime external services

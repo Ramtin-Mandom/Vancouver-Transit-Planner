@@ -130,13 +130,6 @@ export function TripPlannerForm({ loading, apiStatus = "connected", onSubmit }: 
 
       <div className="tripFields">
         <div className="fieldGroup">
-          <label htmlFor="travel-date">Travel date</label>
-          <input id="travel-date" type="date" disabled aria-describedby="travel-date-status" />
-          <small id="travel-date-status" className="unavailableStatus">
-            Feature not implemented
-          </small>
-        </div>
-        <div className="fieldGroup">
           <label htmlFor="departure-time">Departure time</label>
           <input
             id="departure-time"

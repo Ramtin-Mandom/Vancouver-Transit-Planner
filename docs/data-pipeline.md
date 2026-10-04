@@ -96,22 +96,18 @@ The writer emits snapshot format 3. The current loader safely accepts format 2
 and 3. Unsupported versions, corrupt arrays, invalid time ordering, or unsafe
 metadata fail validation rather than reaching production.
 
-## Feed expiration
+## Reusable time-of-day timetable
 
-The snapshot derives earliest and latest usable service dates from calendars and
-exceptions. During the final 30 days `/ready` includes a warning. After the last
-usable date, `/ready` returns `503` and routing reports feed expiration instead
-of “no routes.”
+The public snapshot API uses all saved trips by departure time, ignoring calendar
+dates, weekday masks, and exceptions. `/ready` reports `schedule_mode: "time_of_day"`;
+calendar expiration never blocks routing. Existing snapshots remain compatible.
 
-Refresh procedure:
+Reliability uses historical observations pooled into time-of-day buckets. Raw
+observation timestamps and GTFS calendars remain for ingestion, deduplication,
+provenance, and legacy dated experiments; they do not constrain public snapshot routing.
 
-1. Download the new feed.
-2. Clean orphaned optional extension rows and review the report.
-3. Dry-run validation.
-4. Import with the intended replacement database.
-5. Recompute reliability profiles when current observations are available.
-6. Rebuild and validate the snapshot.
-7. Run backend tests and one real route request within the new service range.
-8. Deploy only through `main` after explicit authorization.
+This historical model can combine weekday, weekend, and seasonal services. It does
+not represent service on a specific date. Refresh and rebuild the snapshot when
+you want updated network data, not merely because the calendar has advanced.
 
 See [data attribution](../data/README.md).

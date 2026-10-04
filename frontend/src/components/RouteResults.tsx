@@ -41,7 +41,7 @@ export function RouteResults({
             {result.origin.stop_name} <span>to</span> {result.destination.stop_name}
           </h2>
           <p>
-            Departing from {result.requested_departure_time} on {result.service_date}. The engine
+            Departing at {result.requested_departure_time}. The engine
             has already ranked {result.alternatives.length}{" "}
             {result.alternatives.length === 1 ? "alternative" : "alternatives"}.
           </p>

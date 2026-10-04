@@ -4,7 +4,7 @@ export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
 
 export type ApiErrorKind =
-  "invalid_input" | "timeout" | "planner_not_ready" | "feed_expired" | "network" | "server";
+  "invalid_input" | "timeout" | "planner_not_ready" | "network" | "server";
 
 export class ApiError extends Error {
   constructor(
@@ -70,11 +70,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
         ? "invalid_input"
         : response.status === 504
           ? "timeout"
-          : response.status === 503 && /expired/i.test(message)
-            ? "feed_expired"
-            : response.status === 503
-              ? "planner_not_ready"
-              : "server";
+          : response.status === 503
+            ? "planner_not_ready"
+            : "server";
     throw new ApiError(message, response.status, kind);
   }
   return response.json() as Promise<T>;

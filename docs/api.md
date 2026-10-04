@@ -12,9 +12,11 @@ does not prove routing is available.
 ### `GET /ready`
 
 Routing readiness. Returns `200` when the active planner can serve routes and
-`503` while the snapshot is loading, unavailable, incompatible, or expired.
-Snapshot responses include format/source information, counts, and service-range
-state where available.
+`503` while the snapshot is loading, unavailable, or incompatible.
+Snapshot responses include format/source information, counts, and
+`schedule_mode: "time_of_day"`. Calendar expiration does not block readiness.
+Route responses replace `service_date` with `schedule_mode: "time_of_day"`.
+All saved trips are eligible regardless of their original calendar dates.
 
 ## Stop search
 
@@ -96,8 +98,7 @@ deadline is `504`, not a successful empty response.
 
 - `4xx`: malformed stop query, invalid request, unsupported algorithm, unknown
   stop, or other client-correctable input.
-- `503`: planner unavailable, incompatible/missing production resource, or
-  expired feed.
+- `503`: planner unavailable or incompatible/missing production resource.
 - `504`: genuine routing deadline.
 - `500`: unexpected server failure with a safe client message; traceback remains
   only in server logs.

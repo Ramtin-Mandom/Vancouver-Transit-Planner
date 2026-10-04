@@ -37,7 +37,7 @@ it("clears stale results when a newer request starts and fails", async () => {
   );
   fireEvent.click(screen.getByRole("button", { name: "submit trip" }));
   expect(screen.queryByText("route results")).not.toBeInTheDocument();
-  await act(async () => rejectNewest(new ApiError("expired", 503, "feed_expired")));
+  await act(async () => rejectNewest(new ApiError("not ready", 503, "planner_not_ready")));
   expect(screen.queryByText("route results")).not.toBeInTheDocument();
-  expect(screen.getByText(/schedule data has expired/i)).toBeVisible();
+  expect(screen.getByText(/planner is not ready yet/i)).toBeVisible();
 });

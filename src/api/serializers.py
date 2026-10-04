@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import timedelta
 
 from src.routing.cli import format_gtfs_time
 from src.routing.models import ReliableSearchResult, Stop
@@ -46,7 +46,6 @@ def serialize_result(
     result: ReliableSearchResult,
     origin: Stop,
     destination: Stop,
-    service_date: date,
     requested_departure_time: timedelta,
 ) -> RoutePlanResponse:
     alternatives = []
@@ -107,7 +106,6 @@ def serialize_result(
     return RoutePlanResponse(
         origin=serialize_stop(origin),
         destination=serialize_stop(destination),
-        service_date=service_date,
         requested_departure_time=format_gtfs_time(requested_departure_time),
         alternatives=alternatives,
         timing=SearchTimingResponse(

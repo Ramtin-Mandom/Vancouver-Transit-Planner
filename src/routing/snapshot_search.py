@@ -58,6 +58,9 @@ def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
 
 
 def active_services(arrays: dict[str, np.ndarray], service_date) -> np.ndarray:
+    # None selects the reusable timetable, including exception-only services.
+    if service_date is None:
+        return np.ones(len(arrays["service_start_ordinal"]), dtype=bool)
     ordinal = service_date.toordinal()
     active = (
         (ordinal >= arrays["service_start_ordinal"])

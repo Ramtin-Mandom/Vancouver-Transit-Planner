@@ -931,7 +931,7 @@ class SnapshotPlanner:
         self,
         origin_stop_id: str,
         destination_stop_id: str,
-        service_date: date,
+        service_date: date | None,
         departure_time: timedelta,
         resolver=None,
         *,

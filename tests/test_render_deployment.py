@@ -184,7 +184,7 @@ def test_ready_returns_503_when_routing_is_unavailable():
     app.state.services = None
 
 
-def test_expired_snapshot_is_unready_and_route_error_is_explicit(tmp_path, monkeypatch):
+def test_expired_snapshot_remains_ready_and_routes_without_calendar_filtering(tmp_path, monkeypatch):
     from datetime import date
 
     path = tmp_path / "expired"
@@ -212,11 +212,8 @@ def test_expired_snapshot_is_unready_and_route_error_is_explicit(tmp_path, monke
     try:
         with TestClient(app) as client:
             readiness = client.get("/ready")
-            assert readiness.status_code == 503
-            assert readiness.json()["service_range"] == {
-                "earliest_date": "2020-01-01",
-                "latest_date": "2020-01-31",
-            }
+            assert readiness.status_code == 200
+            assert readiness.json()["schedule_mode"] == "time_of_day"
             response = client.post(
                 "/routes/plan",
                 json={
@@ -232,8 +229,9 @@ def test_expired_snapshot_is_unready_and_route_error_is_explicit(tmp_path, monke
                     "transfer_effect": 0,
                 },
             )
-            assert response.status_code == 503
-            assert "GTFS feed expired" in response.json()["detail"]
+            assert response.status_code == 200
+            assert response.json()["alternatives"]
+            assert "service_date" not in response.json()
     finally:
         app.state.services = None
         services.close()

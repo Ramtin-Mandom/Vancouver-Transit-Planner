@@ -55,12 +55,10 @@ describe("TripPlannerForm", () => {
     await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
     expect(onSubmit.mock.calls[0][0]).not.toHaveProperty("route_number");
   });
-  it("shows an unavailable date control without submitting a date", async () => {
+  it("has no date control and submits only time of day", async () => {
     const onSubmit = vi.fn();
     render(<TripPlannerForm loading={false} onSubmit={onSubmit} />);
-    const date = screen.getByLabelText("Travel date");
-    expect(date).toBeDisabled();
-    expect(date).toHaveAccessibleDescription("Feature not implemented");
+    expect(screen.queryByLabelText("Travel date")).not.toBeInTheDocument();
     await selectBoth();
     await userEvent.click(screen.getByRole("button", { name: "Find routes" }));
     expect(onSubmit).toHaveBeenCalledOnce();

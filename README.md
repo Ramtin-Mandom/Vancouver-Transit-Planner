@@ -51,7 +51,7 @@ inspect each alternative independently on the map.
 - Reliability-aware ranking with explicit fallback metadata.
 - Optional alternatives, capped at three public results.
 - Separate map geometry, markers, colors, and selection for each alternative.
-- Explicit timeout, feed-expiration, planner-readiness, and no-route states.
+- Explicit timeout, planner-readiness, and no-route states.
 - `/health` process liveness and `/ready` routing readiness.
 - PostgreSQL ingestion and reliability aggregation outside request handling.
 - Memory-mapped, database-free snapshot routing in production.
@@ -220,7 +220,7 @@ Abbreviated response reproduced on 2026-08-04:
     "stop_id": "378",
     "stop_name": "Eastbound W 41 Ave @ Collingwood St"
   },
-  "service_date": "2026-08-04",
+  "schedule_mode": "time_of_day",
   "requested_departure_time": "05:00:00",
   "alternatives": [
     {
@@ -303,13 +303,12 @@ See [Data policy and attribution](data/README.md).
 
 ## Known limitations
 
-- The UI plans only for the current Vancouver service date; its date control is
-  disabled.
+- The UI plans by time of day using all saved trips without a travel date.
+  Weekday, weekend, and seasonal services may be combined.
 - Reliability is an estimate from available samples, not a guarantee.
 - Missing or under-sampled exact profiles can fall back through broader profile
   levels; the response reports the level actually selected.
-- Feed expiration makes `/ready` return `503` and blocks routing until the feed
-  and snapshot are refreshed.
+- Saved timetables do not expire and do not claim to represent current service.
 - Alternative search is bounded and can report candidate truncation internally.
 - Geographic A* acceleration requires valid coordinates and a provable global
   speed bound; otherwise it safely becomes zero-heuristic search.

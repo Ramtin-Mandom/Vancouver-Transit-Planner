@@ -21,10 +21,10 @@ describe("API client", () => {
       vi.fn().mockResolvedValue({
         ok: false,
         status: 503,
-        json: async () => ({ detail: "GTFS feed expired" })
+        json: async () => ({ detail: "Routing service unavailable" })
       })
     );
-    await expect(checkReady()).rejects.toThrow("GTFS feed expired");
+    await expect(checkReady()).rejects.toThrow("Routing service unavailable");
   });
   it("constructs an encoded stop-search request", async () => {
     const fetchMock = vi.fn().mockResolvedValue({

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import date, timedelta
+from datetime import timedelta
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -235,7 +235,7 @@ class SearchDiagnosticsResponse(ApiModel):
 class RoutePlanResponse(ApiModel):
     origin: StopResponse
     destination: StopResponse
-    service_date: date
+    schedule_mode: Literal["time_of_day"] = "time_of_day"
     requested_departure_time: str
     alternatives: list[RouteAlternativeResponse]
     timing: SearchTimingResponse

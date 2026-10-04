@@ -68,7 +68,7 @@ class RouteLeg:
 class Itinerary:
     origin: Stop
     destination: Stop
-    service_date: date
+    service_date: date | None
     departure_time: timedelta
     arrival_time: timedelta
     legs: tuple[RouteLeg, ...]

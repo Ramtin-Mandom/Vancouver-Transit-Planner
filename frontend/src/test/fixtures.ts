@@ -19,7 +19,7 @@ export const destination: Stop = {
 export const routeResult: RoutePlanResponse = {
   origin,
   destination,
-  service_date: "2026-07-29",
+  schedule_mode: "time_of_day",
   requested_departure_time: "25:10:00",
   alternatives: [
     {

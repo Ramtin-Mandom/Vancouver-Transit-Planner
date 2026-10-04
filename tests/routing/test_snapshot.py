@@ -902,3 +902,33 @@ def test_pickup_dropoff_transfer_and_maximum_transfer(tmp_path):
         )
     finally:
         loaded.close()
+
+
+@pytest.mark.parametrize("algorithm", ["astar", "dijkstra"])
+def test_dateless_timetable_preserves_departure_time(snapshot, algorithm):
+    planner = SnapshotPlanner(snapshot)
+    dateless = planner.get_ranked_route_result(
+        "A", "C", None, timedelta(hours=8), algorithm=algorithm
+    )
+    assert dateless.alternatives
+    assert dateless.alternatives[0].itinerary.service_date is None
+    assert dateless.alternatives[0].itinerary.arrival_time == timedelta(hours=8, minutes=30)
+    late = planner.get_ranked_route_result(
+        "A", "C", None, timedelta(hours=9), algorithm=algorithm
+    )
+    assert not late.alternatives
+
+
+def test_dateless_services_include_expired_and_exception_only_calendars():
+    from src.routing.snapshot_search import active_services
+
+    arrays = {
+        "service_start_ordinal": np.array([1, 1]),
+        "service_end_ordinal": np.array([2, 2]),
+        "service_weekday_mask": np.array([1, 0]),
+        "exception_date_ordinal": np.array([1]),
+        "exception_service": np.array([1]),
+        "exception_type": np.array([1]),
+    }
+    assert active_services(arrays, date(2026, 10, 4)).tolist() == [False, False]
+    assert active_services(arrays, None).tolist() == [True, True]

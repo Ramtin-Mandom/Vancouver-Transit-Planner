@@ -51,7 +51,7 @@ export interface SearchTiming {
 export interface RoutePlanResponse {
   origin: Stop;
   destination: Stop;
-  service_date: string;
+  schedule_mode: "time_of_day";
   requested_departure_time: string;
   alternatives: RouteAlternative[];
   timing: SearchTiming;
