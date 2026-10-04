@@ -54,6 +54,7 @@ def serialize_result(
         legs = [
             RouteLegResponse(
                 trip_id=leg.trip_id,
+                is_walk=leg.is_walk,
                 route_id=leg.route_id,
                 route_name=leg.route_name,
                 direction_id=leg.direction_id,

@@ -43,6 +43,7 @@ class RouteLegResponse(ApiModel):
     departure_time: str
     arrival_time: str
     duration_seconds: int
+    is_walk: bool = False
     stops: list[LegStopResponse]
 
 

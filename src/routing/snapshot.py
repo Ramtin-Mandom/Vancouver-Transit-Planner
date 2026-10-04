@@ -7,6 +7,7 @@ import math
 import os
 import shutil
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from time import perf_counter
@@ -892,6 +893,18 @@ class SnapshotPlanner:
         from .snapshot_bounds import NetworkBounds
 
         self.network_bounds = NetworkBounds(snapshot.arrays)
+        # Legacy format-2 archives lack parent profiles. Pool existing estimates
+        # by sample count and time bucket; never invent a measured rail profile.
+        self.pooled_profiles = {}
+        a = snapshot.arrays
+        for window_index in range(5):
+            rows = np.flatnonzero(a["profile_window"] == window_index)
+            weights = a["profile_samples"][rows].astype(float)
+            if weights.sum() > 0:
+                self.pooled_profiles[window_index] = (
+                    float(np.average(a["profile_probability"][rows], weights=weights)),
+                    int(weights.sum()),
+                )
 
     @staticmethod
     def _semantic_identity(alternative: ReliableAlternative) -> tuple:
@@ -945,6 +958,11 @@ class SnapshotPlanner:
         include_diagnostics=False,
         **_: Any,
     ) -> ReliableSearchResult:
+        if preferences is not None and not include_alternatives:
+            return self._rank_simple_candidates(
+                origin_stop_id, destination_stop_id, service_date, departure_time,
+                resolver, preferences, algorithm, include_diagnostics, _
+            )
         requested_algorithm = str(algorithm).strip().lower()
         if requested_algorithm == "baseline":
             requested_algorithm = "dijkstra"
@@ -954,6 +972,9 @@ class SnapshotPlanner:
         a = self.snapshot.arrays
         origin = self.snapshot.stop_index(origin_stop_id)
         destination = self.snapshot.stop_index(destination_stop_id)
+        from .snapshot_access import destination_access
+
+        a, access, original_transfer_count = destination_access(a, destination)
         departure_seconds = max(0, int(departure_time.total_seconds()))
         route_limit = (
             min(MAX_ALTERNATIVES, max(1, int(route_number)))
@@ -979,7 +1000,7 @@ class SnapshotPlanner:
             heuristic_metadata=self.snapshot.heuristic_metadata,
             clock=_.get("_clock"),
             network_bounds=(
-                self.network_bounds.to(destination)
+                self.network_bounds.to(destination, access)
                 if requested_algorithm == "astar" and not include_alternatives
                 else None
             ),
@@ -1072,6 +1093,20 @@ class SnapshotPlanner:
                 )
                 selections.append(selection)
                 pos = end + 1
+            cursor = winner
+            while labels[cursor].previous >= 0:
+                label = labels[cursor]
+                edge = -2 - label.connection
+                previous = labels[label.previous]
+                if label.connection <= -2 and edge >= original_transfer_count:
+                    legs.append(RouteLeg(
+                        f"walk-{previous.stop}-{label.stop}", "walk", "Walk between bays",
+                        self.snapshot.stop(previous.stop), self.snapshot.stop(label.stop),
+                        timedelta(seconds=previous.arrival), timedelta(seconds=label.arrival),
+                        is_walk=True,
+                    ))
+                cursor = label.previous
+            legs.sort(key=lambda leg: leg.departure_time)
             # Missing profiles use an explicit conservative fallback. They are
             # never silently treated as perfectly reliable.
             probability = 1.0
@@ -1142,6 +1177,44 @@ class SnapshotPlanner:
             result, route_number=route_limit, preferences=preferences
         )
 
+    def _rank_simple_candidates(
+        self, origin, destination, service_date, departure_time, resolver,
+        preferences, algorithm, include_diagnostics, bounds,
+    ):
+        started = perf_counter()
+        timeout = float(bounds.get("timeout_seconds", 30.0))
+        cap = int(bounds.get("max_transfers", 3))
+        candidates = []
+        first_result = None
+        while cap >= 0:
+            remaining = timeout - (perf_counter() - started)
+            if remaining <= 0:
+                raise ReliableSearchTimeout("candidate search exceeded request deadline")
+            result = self.get_ranked_route_result(
+                origin, destination, service_date, departure_time, resolver,
+                algorithm=algorithm, include_diagnostics=include_diagnostics,
+                **{**bounds, "max_transfers": cap, "timeout_seconds": remaining},
+            )
+            if first_result is None:
+                first_result = result
+            if not result.alternatives:
+                break
+            candidate = result.alternatives[0]
+            candidates.append(candidate)
+            cap = candidate.itinerary.transfer_count - 1
+        if not candidates:
+            return first_result
+        latest = min(x.itinerary.arrival_time for x in candidates) + timedelta(
+            minutes=int(bounds.get("max_extra_minutes", 30))
+        )
+        candidates = tuple(x for x in candidates if x.itinerary.arrival_time <= latest)
+        elapsed = (perf_counter() - started) * 1000
+        return ranked_search_result(
+            replace(first_result, alternatives=candidates,
+                    timing=SearchTiming(0, elapsed, 0, elapsed)),
+            route_number=1, preferences=preferences,
+        )
+
     def _profile(
         self, route: int, direction: int | None, window: str, minimum_samples: int
     ) -> ProfileSelection:
@@ -1201,6 +1274,20 @@ class SnapshotPlanner:
                 ),
             }
 
-        return select_profile(
+        selected = select_profile(
             str(a["route_ids"][route]), direction, profile, fallback, minimum_samples
         )
+        pooled = self.pooled_profiles.get(names.index(window))
+        if selected.profile is None and pooled is not None:
+            probability, samples = pooled
+            estimated = select_profile(
+                str(a["route_ids"][route]), direction, None,
+                lambda level, route_id, direction_id: {
+                    "reliability_probability": probability,
+                    "on_time_probability": probability,
+                    "sample_count": samples,
+                } if level == "network" else None,
+                minimum_samples,
+            )
+            return replace(estimated, fallback_level="network_window_estimate", insufficient_data=True)
+        return selected

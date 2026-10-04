@@ -62,6 +62,7 @@ class RouteLeg:
     arrival_time: timedelta
     direction_id: int | None = None
     stops: tuple[LegStop, ...] = ()
+    is_walk: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ class Itinerary:
 
     @property
     def transfer_count(self) -> int:
-        return max(0, len(self.legs) - 1)
+        return max(0, sum(not leg.is_walk for leg in self.legs) - 1)
 
     @property
     def total_scheduled_travel_time(self) -> timedelta:

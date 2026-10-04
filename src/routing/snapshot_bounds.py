@@ -34,10 +34,14 @@ class NetworkBounds:
                 target, origin = divmod(int(key), n)
                 self.edges[target].append((origin, max(0, int(cost))))
 
-    def to(self, destination):
+    def to(self, destination, access=None):
         distances = [float("inf")] * len(self.edges)
         distances[destination] = 0
         queue = [(0, destination)]
+        for stop, seconds in (access or {}).items():
+            distances[stop] = seconds
+            queue.append((seconds, stop))
+        heapq.heapify(queue)
         while queue:
             distance, stop = heapq.heappop(queue)
             if distance != distances[stop]:
